@@ -819,7 +819,7 @@ function dueBatches(today){
     if(!lockedBy(a.byRole)||!canDelete(role,a))return;
     var k=a.created+'|'+a.subject+'|'+a.title+'|'+a.byRole;(m[k]=m[k]||[]).push(a);
   });
-  return Object.keys(m).map(function(k){return{key:k,list:m[k]}})
+  return Object.keys(m).map(function(k){return{key:k,list:m[k]}}).filter(function(b){return (b.list[0].kind==='study')===(tab==='study')})
     .filter(function(b){return b.list.some(function(a){return !planFor(a,today).complete})})
     .sort(function(x,y){return y.list[0].created-x.list[0].created}).slice(0,12);
 }
@@ -857,7 +857,7 @@ function changeDue(list,fn){
 }
 function renderList(list,today,kl){
   if(!list.length){
-    var m=me(),msg=tab==='study'?(kl.length?'No study plans yet.'+(isStaff(m.role)?' Students add their own study plans here, and you can see them.':' Tap Add study plan, type a subject, pick your target date and the days you will study it. For example 5 chapters by the 30th over 10 chosen days.'):'Nothing to show yet.'):!kl.length?(m.role==='teacher'?'No students yet. Add one under People below.':m.role==='classteacher'?'No students are in your class yet. Add one under My students below, or ask the admin to place students in your class.':m.role==='parent'?'No children are linked to you yet. Add a child under My children below, or ask the teacher to link one.':'No homework yet.')
+    var m=me(),msg=tab==='study'?(kl.length?'No study plans yet.'+(isStaff(m.role)?' Tap Assign study plan to give students a subject and a target date, or students can add their own.':' Tap Add subject, type a subject, pick your target date and the days you will study it. For example 5 chapters by the 30th over 10 chosen days.'):'Nothing to show yet.'):!kl.length?(m.role==='teacher'?'No students yet. Add one under People below.':m.role==='classteacher'?'No students are in your class yet. Add one under My students below, or ask the admin to place students in your class.':m.role==='parent'?'No children are linked to you yet. Add a child under My children below, or ask the teacher to link one.':'No homework yet.')
       :(isStaff(m.role)?'No homework for this student yet. Tap Assign homework to assign some.':'No homework yet. Tap Add assignment. For example: 12 questions with 4 parts each, due Friday, worked on over 3 chosen days, comes out as 16 a day.');
     $('#list').innerHTML='<div class="card empty">'+msg+'</div>';return;
   }
@@ -951,9 +951,9 @@ function renderMain(today){
   renderDueBox(today);
   var st=tab==='study';
   document.querySelectorAll('#tabs [data-tab]').forEach(function(x){x.setAttribute('aria-pressed',String(x.dataset.tab===tab))});
-  $('#work-title').textContent=overview?(st?'Add a study plan':'Add homework'):(kl.length&&(m.role!=='student'))?kidName(c)+(st?"'s study plans":"'s assignments"):(st?'Study plans':'Assignments');
-  $('#open-add').hidden=!kl.filter(function(k){return k.id!=='unassigned'}).length||(st&&isStaff(m.role));
-  $('#open-add').textContent=st?'Add study plan':isStaff(m.role)?'Assign homework':'Add assignment';
+  $('#work-title').textContent=overview?(st?'Add a subject':'Add homework'):(kl.length&&(m.role!=='student'))?kidName(c)+(st?"'s study plans":"'s assignments"):(st?'Study plans':'Assignments');
+  $('#open-add').hidden=!kl.filter(function(k){return k.id!=='unassigned'}).length;
+  $('#open-add').textContent=st?(isStaff(m.role)?'Assign study plan':'Add subject'):isStaff(m.role)?'Assign homework':'Add assignment';
   if(overview)$('#list').innerHTML='';else renderList(list,today,kl);
   renderPeople();
 }
@@ -1147,13 +1147,13 @@ function fillSubjects(){
   $('#subj-list').innerHTML=COMMON.map(function(x){return '<option value="'+esc(x)+'">'}).join('');
 }
 function setFormLabels(isT,isP){
-  var st=tab==='study'&&!isT,set=function(sel,t){var e=document.querySelector(sel);if(e)e.textContent=t};
+  var st=tab==='study',set=function(sel,t){var e=document.querySelector(sel);if(e)e.textContent=t};
   set('label[for="f-due"]',st?'Target date to finish':'Due date');
   set('label[for="f-q"]',st?'Number of questions or topics':'Number of questions');
   set('label[for="f-title"]',st?'Topic (optional)':'Details (optional)');
   $('#f-title').placeholder=st?'Chapters 1 to 5 revision':'Chapter 5, exercise 5.2';
   $('#f-dates-l').textContent=st?(isP?'Which days will they study this subject?':'Which days will you study this subject?'):(isP?'Which days can they work on this homework?':'Which days can you work on this homework?');
-  $('#f-submit').textContent=isT?'Assign homework':st?'Create study plan':'Create plan';
+  $('#f-submit').textContent=isT?(st?'Assign study plan':'Assign homework'):st?'Add subject':'Create plan';
 }
 function openForm(){
   var today=ymd(new Date()),m=me(),isT=isStaff(m.role),isP=m.role==='parent',kl=kidList().filter(function(k){return k.id!=='unassigned'}),sel=$('#f-for'),c=curKid();
@@ -1227,7 +1227,7 @@ form.addEventListener('submit',function(e){
   targets.forEach(function(sid){
     var id=newId('a'),d={subject:v.subject.slice(0,60),title:v.title.slice(0,80),parts:v.parts,total:v.total,dates:isT?[]:v.dates,due:v.due,done:{},doneUnits:{},studentId:sid,byRole:m.role,byName:by.slice(0,60),created:now};
     if(grp)d.group=grp;
-    if(tab==='study'&&!isT)d.kind='study';
+    if(tab==='study')d.kind='study';
     docs.push([id,d,{aid:id,studentId:sid,subject:v.subject.slice(0,60),type:'created',n:v.total,days:isT?0:v.dates.length,date:isT?v.due:v.dates[0],byRole:m.role,byName:by.slice(0,60),at:now}]);
   });
   // Written in small batches: the security rules look up each student once per write, and Firestore caps how many lookups one batch may make.
@@ -1240,7 +1240,7 @@ form.addEventListener('submit',function(e){
   })().catch(writeFail);
   if(m.role!=='student'&&kidList().length>=2&&targets.length===1)kid=targets[0];
   form.reset();picked.clear();fParts=null;buildPartsGrid();assignSel.clear();form.hidden=true;
-  toast(tab==='study'&&!isT?'Study plan created.':isT?'Assigned to '+targets.length+' student'+(targets.length===1?'':'s')+'.':'Plan created.');render();
+  toast(tab==='study'&&!isT?'Subject added.':isT?(tab==='study'?'Study plan assigned to ':'Assigned to ')+targets.length+' student'+(targets.length===1?'':'s')+'.':'Plan created.');render();
 });
 document.addEventListener('visibilitychange',function(){if(!document.hidden)render()});
 
