@@ -188,6 +188,11 @@ details.qgrid summary{cursor:pointer;font-weight:600;font-size:.9rem}
       </div>
       <form class="card" id="add" hidden novalidate>
         <div class="field" id="f-assign-wrap" hidden>
+          <div class="field" id="f-groups-wrap" hidden>
+            <span class="lbl" id="f-groups-l">Groups</span>
+            <div class="dates" id="f-groups" role="group" aria-labelledby="f-groups-l"></div>
+            <span class="hint">Tap a group to select all its students. You can still add or remove single students below.</span>
+          </div>
           <span class="lbl" id="f-assign-l">Assign to</span>
           <div class="dates" id="f-assign" role="group" aria-labelledby="f-assign-l"></div>
           <div class="tact">
@@ -257,7 +262,7 @@ details.qgrid summary{cursor:pointer;font-weight:600;font-size:.9rem}
    ===================================================================== */
 window.FIREBASE_CONFIG = {
   apiKey: "AIzaSyCx0NSFAbL3UhJ1tF8s8QZ3JKi3NOPoCS4",
-  authDomain: "homework-planner-1d97e.firebaseapp.com",",
+  authDomain: "homework-planner-1d97e.firebaseapp.com",
   projectId: "homework-planner-1d97e",
   appId: "1:971620540421:web:bc57383106a17ccc323c6c"
 };
@@ -322,6 +327,7 @@ function normCode(s){return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'')
 //#logic-end
 
 function makeCode(role){
+  if(role==='classteacher')role='teacher';
   var A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',b=new Uint8Array(10),s='',i;
   crypto.getRandomValues(b);
   for(i=0;i<10;i++)s+=A[b[i]%32];
@@ -335,7 +341,7 @@ function loginPass(norm){return 'hwp1-'+norm}
 var CFG=window.FIREBASE_CONFIG||{};
 var fb=null,auth=null,fs=null,secApp=null;
 var fatal='',authKnown=false,setupChecked=false,setupDone=false,settingUp=false,sessionLoading=false,working=false;
-var acct=null,items=new Map(),people=new Map(),updates=[];
+var acct=null,items=new Map(),people=new Map(),updates=[],groups=new Map();
 var itemSrc={},updSrc={},peopleSrc={},unsubs={},kidSubbed={},subErr=false;
 var loginRole=null,loginErr='',loginBusy=false,kid=null,picked=new Set(),reveal=null,confirmId=null,toastTimer=null;
 var planning=null,openGrids=new Set(),assignSel=new Set(),fParts=null;
@@ -343,7 +349,11 @@ var $=function(s){return document.querySelector(s)};
 var esc=function(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})};
 var fmt=function(s,o){return parse(s).toLocaleDateString('en-GB',o||{weekday:'short',day:'numeric',month:'short'})};
 var DATE_RE=/^\d{4}-\d{2}-\d{2}$/;
-var ROLE={teacher:'Teacher',parent:'Parent',student:'Student'};
+var ROLE={teacher:'Admin teacher',classteacher:'Class teacher',parent:'Parent',student:'Student'};
+var PICK={teacher:'Teacher',classteacher:'Teacher',parent:'Parent',student:'Student'};
+function isStaff(r){return r==='teacher'||r==='classteacher'}
+function lockedBy(r){return r==='teacher'||r==='classteacher'}
+function canDelete(role,a){return role==='teacher'||(role==='classteacher'?a.byRole!=='teacher':!lockedBy(a.byRole))}
 
 function clean(id,d){
   if(!d||!DATE_RE.test(String(d.due)))return null;
@@ -363,11 +373,15 @@ function clean(id,d){
     if(Number.isInteger(ix)&&ix>=0&&ix<total&&DATE_RE.test(String(d.doneUnits[u])))du[ix]=d.doneUnits[u];
   }
   return{id:id,subject:String(d.subject||'Homework').slice(0,60),title:String(d.title||'').slice(0,80),parts:parts,total:total,dates:dates,due:d.due,done:done,doneUnits:du,
-    studentId:String(d.studentId||''),byRole:String(d.byRole||''),byName:String(d.byName||'').slice(0,60),created:Number(d.created)||0};
+    studentId:String(d.studentId||''),byRole:String(d.byRole||''),byName:String(d.byName||'').slice(0,60),group:String(d.group||'').slice(0,80),created:Number(d.created)||0};
 }
 function personFrom(doc){
   var x=doc.data()||{};
-  return{pid:doc.id,role:x.role,name:String(x.name||'Unnamed').slice(0,60),links:Array.isArray(x.links)?x.links.filter(function(s){return typeof s==='string'}):[],createdBy:x.createdBy||'',accountUid:x.accountUid||''};
+  return{pid:doc.id,role:x.role,name:String(x.name||'Unnamed').slice(0,60),links:Array.isArray(x.links)?x.links.filter(function(s){return typeof s==='string'}):[],teachers:Array.isArray(x.teachers)?x.teachers.filter(function(s){return typeof s==='string'}):[],createdBy:x.createdBy||'',accountUid:x.accountUid||''};
+}
+function groupFrom(doc){
+  var x=doc.data()||{};
+  return{id:doc.id,name:String(x.name||'Group').slice(0,60),ownerPid:String(x.ownerPid||''),members:Array.isArray(x.members)?x.members.filter(function(s){return typeof s==='string'}):[]};
 }
 function newId(p){return (p||'a')+Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 
@@ -412,22 +426,27 @@ function rebuildUpd(){var all=[];Object.keys(updSrc).forEach(function(k){all=all
 function rebuildPeople(){people=new Map();Object.keys(peopleSrc).forEach(function(k){peopleSrc[k].forEach(function(p){people.set(p.pid,p)})})}
 function onItems(k){return function(s){itemSrc[k]=s.docs.map(function(d){return clean(d.id,d.data())}).filter(Boolean);rebuildItems();render()}}
 function onUpd(k){return function(s){updSrc[k]=s.docs.map(function(d){return d.data()});rebuildUpd();render()}}
-function onPeople(k){return function(s){peopleSrc[k]=s.docs.map(personFrom);rebuildPeople();render()}}
+function onPeople(k){return function(s){peopleSrc[k]=s.docs.map(personFrom);rebuildPeople();if(k==='cls')syncKids();render()}}
+function onGroups(s){groups=new Map();s.docs.forEach(function(d){groups.set(d.id,groupFrom(d))});render()}
 function onPerson(k){return function(d){peopleSrc[k]=d.exists?[personFrom(d)]:[];rebuildPeople();if(k==='self')syncKids();render()}}
 function sub(key,ref,fn){
   if(unsubs[key])unsubs[key]();
-  unsubs[key]=ref.onSnapshot(fn,function(e){subErr=true;if(key==='self'&&e&&e.code==='permission-denied')return;render()});
+  unsubs[key]=ref.onSnapshot(fn,function(e){
+    // a child who was just unlinked or moved out of the class can no longer be read; that is expected
+    if(e&&e.code==='permission-denied'&&/^[pau]:/.test(key))return;
+    subErr=true;if(key==='self'&&e&&e.code==='permission-denied')return;render();
+  });
 }
-function unsubAll(){Object.keys(unsubs).forEach(function(k){try{unsubs[k]()}catch(e){}});unsubs={};kidSubbed={};itemSrc={};updSrc={};peopleSrc={};items=new Map();people=new Map();updates=[];subErr=false}
+function unsubAll(){Object.keys(unsubs).forEach(function(k){try{unsubs[k]()}catch(e){}});unsubs={};kidSubbed={};itemSrc={};updSrc={};peopleSrc={};items=new Map();people=new Map();updates=[];groups=new Map();subErr=false}
 function kidSubs(pid,withPerson){
   if(withPerson)sub('p:'+pid,fs.doc('people/'+pid),onPerson('p:'+pid));
   sub('a:'+pid,fs.collection('assignments').where('studentId','==',pid),onItems('a:'+pid));
   sub('u:'+pid,fs.collection('updates').where('studentId','==',pid).limit(120),onUpd('u:'+pid));
 }
 function syncKids(){
-  if(!acct||acct.role!=='parent')return;
-  var m=me(),want=m?m.links:[];
-  want.forEach(function(sid){if(!kidSubbed[sid]){kidSubbed[sid]=true;kidSubs(sid,true)}});
+  if(!acct||(acct.role!=='parent'&&acct.role!=='classteacher'))return;
+  var m=me(),isP=acct.role==='parent',want=isP?(m?m.links:[]):(peopleSrc['cls']||[]).filter(function(p){return p.role==='student'}).map(function(p){return p.pid});
+  want.forEach(function(sid){if(!kidSubbed[sid]){kidSubbed[sid]=true;kidSubs(sid,isP)}});
   Object.keys(kidSubbed).forEach(function(sid){
     if(want.indexOf(sid)<0){
       ['p:','a:','u:'].forEach(function(p){if(unsubs[p+sid]){unsubs[p+sid]();delete unsubs[p+sid]}});
@@ -442,6 +461,12 @@ function subscribe(){
     sub('people',fs.collection('people'),onPeople('all'));
     sub('assign',fs.collection('assignments'),onItems('all'));
     sub('upd',fs.collection('updates').orderBy('at','desc').limit(80),onUpd('all'));
+    sub('groups',fs.collection('groups'),onGroups);
+  }else if(acct.role==='classteacher'){
+    // a class teacher only ever reads her own record, the students placed in her class, and her own groups
+    sub('self',fs.doc('people/'+acct.pid),onPerson('self'));
+    sub('cls',fs.collection('people').where('teachers','array-contains',acct.pid),onPeople('cls'));
+    sub('groups',fs.collection('groups').where('ownerPid','==',acct.pid),onGroups);
   }else{
     sub('self',fs.doc('people/'+acct.pid),onPerson('self'));
     if(acct.role==='student')kidSubs(acct.pid,false);
@@ -464,8 +489,9 @@ async function startSession(user){
     var s=await fs.doc('accounts/'+user.uid).get();
     if(!s.exists){loginErr='This ID has no access. It may have been removed or replaced with a new one.';sessionLoading=false;await auth.signOut();return}
     var a=s.data();
-    if(loginRole&&a.role!==loginRole){
-      loginErr='That is a '+ROLE[a.role].toLowerCase()+' ID. Go back and choose '+ROLE[a.role]+'.';loginRole=null;sessionLoading=false;await auth.signOut();return;
+    if(!PICK[a.role]){loginErr='This ID has no valid access.';sessionLoading=false;await auth.signOut();return}
+    if(loginRole&&PICK[a.role]!==PICK[loginRole]){
+      loginErr='That is a '+PICK[a.role].toLowerCase()+' ID. Go back and choose '+PICK[a.role]+'.';loginRole=null;sessionLoading=false;await auth.signOut();return;
     }
     acct={uid:user.uid,role:a.role,pid:a.pid};
     loginRole=null;loginErr='';kid=null;
@@ -477,7 +503,11 @@ async function startSession(user){
   sessionLoading=false;loginBusy=false;render();
 }
 function endSession(){
-  unsubAll();acct=null;sessionLoading=false;loginBusy=false;kid=null;reveal=null;confirmId=null;render();
+  unsubAll();acct=null;sessionLoading=false;loginBusy=false;kid=null;reveal=null;confirmId=null;
+  // leave nothing from the last person in the page for the next person on a shared phone
+  ['#kids','#overview','#today','#week','#updates','#list','#people'].forEach(function(q){$(q).innerHTML=''});
+  form.hidden=true;
+  render();
 }
 
 /* ---------- people: create, new ID, link, remove ---------- */
@@ -518,7 +548,9 @@ async function createPerson(role,name,asParent){
   if(working)return;working=true;
   try{
     var lg=await makeLogin(role),pid=newId('p'),now=Date.now(),m=me(),b=fs.batch();
-    b.set(fs.doc('people/'+pid),{role:role,name:name.slice(0,60),links:[],createdBy:m.uid,accountUid:lg.uid,created:now});
+    var pd={role:role,name:name.slice(0,60),links:[],createdBy:m.uid,accountUid:lg.uid,created:now};
+    if(role==='student')pd.teachers=m.role==='classteacher'?[m.pid]:[];
+    b.set(fs.doc('people/'+pid),pd);
     b.set(fs.doc('accounts/'+lg.uid),{role:role,pid:pid,created:now});
     if(asParent)b.update(fs.doc('people/'+m.pid),{links:firebase.firestore.FieldValue.arrayUnion(pid)});
     await b.commit();
@@ -546,7 +578,12 @@ async function removePerson(pid){
   if(working)return;var p=people.get(pid);if(!p)return;working=true;
   try{
     if(p.role==='student'){await delWhere('assignments',pid);await delWhere('updates',pid)}
-    var b=fs.batch();b.delete(fs.doc('people/'+pid));if(p.accountUid)b.delete(fs.doc('accounts/'+p.accountUid));
+    var b=fs.batch(),FV=firebase.firestore.FieldValue;b.delete(fs.doc('people/'+pid));if(p.accountUid)b.delete(fs.doc('accounts/'+p.accountUid));
+    if(p.role==='student')groups.forEach(function(g){if(g.members.indexOf(pid)>-1)b.update(fs.doc('groups/'+g.id),{members:FV.arrayRemove(pid)})});
+    if(p.role==='classteacher'){
+      students().forEach(function(st){if(st.teachers.indexOf(pid)>-1)b.update(fs.doc('people/'+st.pid),{teachers:FV.arrayRemove(pid)})});
+      groups.forEach(function(g){if(g.ownerPid===pid)b.delete(fs.doc('groups/'+g.id))});
+    }
     await b.commit();
   }catch(e){writeFail(e)}
   working=false;render();
@@ -555,6 +592,21 @@ function toggleLink(parentPid,sid){
   var p=people.get(parentPid);if(!p)return;
   var on=p.links.indexOf(sid)>-1,FV=firebase.firestore.FieldValue;
   fs.doc('people/'+parentPid).update({links:on?FV.arrayRemove(sid):FV.arrayUnion(sid)}).catch(writeFail);
+}
+
+function toggleClass(ctPid,sid){
+  var st=people.get(sid);if(!st)return;
+  var on=st.teachers.indexOf(ctPid)>-1,FV=firebase.firestore.FieldValue;
+  fs.doc('people/'+sid).update({teachers:on?FV.arrayRemove(ctPid):FV.arrayUnion(ctPid)}).catch(writeFail);
+}
+function createGroup(name){
+  var m=me(),id=newId('g');
+  fs.doc('groups/'+id).set({name:name.slice(0,60),ownerPid:m.pid,members:[],created:Date.now()}).catch(writeFail);
+}
+function toggleMember(gid,sid){
+  var g=groups.get(gid);if(!g)return;
+  var on=g.members.indexOf(sid)>-1,FV=firebase.firestore.FieldValue;
+  fs.doc('groups/'+gid).update({members:on?FV.arrayRemove(sid):FV.arrayUnion(sid)}).catch(writeFail);
 }
 
 /* ---------- homework writes ---------- */
@@ -609,12 +661,12 @@ function renderLogin(){
       '<button class="btn primary" type="submit">Create teacher account</button></form>';
   }else if(!loginRole){
     h='<h2>Who is signing in?</h2>'+(loginErr?errP:'')+'<div class="roles">'+
-      '<button class="rolebtn" data-act="role" data-role="teacher"><b>Teacher</b><span>See every student and manage the class</span></button>'+
+      '<button class="rolebtn" data-act="role" data-role="teacher"><b>Teacher</b><span>Admin, or a class teacher with her own class</span></button>'+
       '<button class="rolebtn" data-act="role" data-role="parent"><b>Parent</b><span>See and manage your children</span></button>'+
       '<button class="rolebtn" data-act="role" data-role="student"><b>Student</b><span>Plan and log your own homework</span></button></div>';
   }else{
-    h='<h2>'+ROLE[loginRole]+' sign in</h2>'+
-      '<form class="card" data-form="login"><div class="field"><label for="l-code">Your '+ROLE[loginRole].toLowerCase()+' ID</label><input id="l-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="'+loginRole.charAt(0).toUpperCase()+'-XXXXX-XXXXX"></div>'+errP+
+    h='<h2>'+PICK[loginRole]+' sign in</h2>'+
+      '<form class="card" data-form="login"><div class="field"><label for="l-code">Your '+PICK[loginRole].toLowerCase()+' ID</label><input id="l-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="'+loginRole.charAt(0).toUpperCase()+'-XXXXX-XXXXX"></div>'+errP+
       '<div class="formact"><button class="btn primary" type="submit"'+(loginBusy?' disabled':'')+'>'+(loginBusy?'Signing in…':'Continue')+'</button><button class="btn" type="button" data-act="back">Back</button></div></form>';
   }
   box.innerHTML=h;
@@ -694,7 +746,7 @@ function renderUpdates(list){
   box.innerHTML=head+'<ul class="upd">'+ups.map(function(u){
     var who=esc(kidName(u.studentId)),subj=esc(u.subject),n=Number(u.n)||0,txt;
     if(u.type==='created'){
-      if(u.byRole==='teacher')txt='<b>'+esc(u.byName||'Teacher')+'</b> assigned '+subj+' ('+n+' to do) to <b>'+who+'</b>';
+      if(u.byRole==='teacher'||u.byRole==='classteacher')txt='<b>'+esc(u.byName||'Teacher')+'</b> assigned '+subj+' ('+n+' to do) to <b>'+who+'</b>';
       else if(u.byRole==='parent')txt='<b>'+esc(u.byName||'Parent')+'</b> added '+subj+' ('+n+' to do) for <b>'+who+'</b>';
       else txt='<b>'+who+'</b> added '+subj+' ('+n+' to do)';
     }else txt='<b>'+who+'</b> did '+n+' '+subj+' on '+esc(DATE_RE.test(u.date)?fmt(u.date):'');
@@ -743,15 +795,15 @@ function planPanel(a,today){
   return '<div class="plan"><div style="font-weight:600">Choose the days for this homework</div><div class="dates">'+h+'</div><div class="tact"><button class="btn primary small" data-act="saveplan" data-id="'+esc(a.id)+'">Save days</button><button class="btn small" data-act="cancelplan">Cancel</button></div></div>';
 }
 function byLabel(a){
-  if(a.byRole==='teacher')return 'Assigned by '+(a.byName||'the teacher');
+  if(a.byRole==='teacher'||a.byRole==='classteacher')return 'Assigned by '+(a.byName||'the teacher')+(a.group?' · group '+a.group:'');
   if(a.byRole==='parent')return 'Added by parent'+(a.byName?' '+a.byName:'');
   if(a.byRole==='student')return 'Added by the student';
   return '';
 }
 function renderList(list,today,kl){
   if(!list.length){
-    var m=me(),msg=!kl.length?(m.role==='teacher'?'No students yet. Add one under People below.':m.role==='parent'?'No children are linked to you yet. Add a child under My children below, or ask the teacher to link one.':'No homework yet.')
-      :(m.role==='teacher'?'No homework for this student yet. Tap Add assignment to assign some.':'No homework yet. Tap Add assignment. For example: 12 questions with 4 parts each, due Friday, worked on over 3 chosen days, comes out as 16 a day.');
+    var m=me(),msg=!kl.length?(m.role==='teacher'?'No students yet. Add one under People below.':m.role==='classteacher'?'No students are in your class yet. Add one under My students below, or ask the admin to place students in your class.':m.role==='parent'?'No children are linked to you yet. Add a child under My children below, or ask the teacher to link one.':'No homework yet.')
+      :(isStaff(m.role)?'No homework for this student yet. Tap Assign homework to assign some.':'No homework yet. Tap Add assignment. For example: 12 questions with 4 parts each, due Friday, worked on over 3 chosen days, comes out as 16 a day.');
     $('#list').innerHTML='<div class="card empty">'+msg+'</div>';return;
   }
   var role=me().role;
@@ -763,7 +815,7 @@ function renderList(list,today,kl){
     else if(p.pastDue)chip='<span class="pill warn">Past due date</span>';
     else if(p.missed)chip='<span class="pill warn">Rebalanced</span>';
     else chip='<span class="pill ok">On track</span>';
-    var canDel=role==='teacher'||a.byRole!=='teacher';
+    var canDel=canDelete(role,a);
     var acts='<div class="aact"><button class="btn small" data-act="plan" data-id="'+id+'">'+(p.unplanned?'Choose days':'Change days')+'</button><button class="btn small" data-act="addday" data-id="'+id+'">Add another day</button>'+
       (!canDel?'':confirmId===a.id?'<button class="btn small danger" data-act="del" data-id="'+id+'">Tap again to delete</button><button class="btn small" data-act="cancel">Keep</button>':'<button class="btn small" data-act="del" data-id="'+id+'">Delete</button>')+'</div>';
     var by=byLabel(a);
@@ -782,15 +834,29 @@ function personRow(p,extra,canRemove,canReset){
   if(canRemove)del=confirmId==='rm:'+p.pid?'<button class="btn small danger" data-act="rm" data-p="'+h+'">Tap again to remove</button><button class="btn small" data-act="cancel">Keep</button>':'<button class="btn small" data-act="rm" data-p="'+h+'">Remove</button>';
   return '<div class="prow"><div class="pname">'+esc(p.name)+(acct&&p.pid===acct.pid?' (you)':'')+'</div>'+(extra||'')+'<div class="tact">'+reset+del+'</div></div>';
 }
+function byName(a,b){return a.name.localeCompare(b.name)}
+function groupsBlock(st){
+  var gl=Array.from(groups.values()).sort(byName),h='<h3>Groups</h3>';
+  h+=gl.length?gl.map(function(g){
+    var own=g.ownerPid===acct.pid,ow=people.get(g.ownerPid),n=g.members.filter(isStudent).length;
+    var chips=st.length?'<div class="chips">'+st.map(function(x){return '<button class="dchip sm" type="button" data-act="gm" data-g="'+esc(g.id)+'" data-sid="'+esc(x.pid)+'" aria-pressed="'+(g.members.indexOf(x.pid)>-1)+'">'+esc(x.name)+'</button>'}).join('')+'</div>':'<div class="sub">Add students first.</div>';
+    var del=confirmId==='g:'+g.id?'<button class="btn small danger" data-act="gdel" data-g="'+esc(g.id)+'">Tap again to delete</button><button class="btn small" data-act="cancel">Keep</button>':'<button class="btn small" data-act="gdel" data-g="'+esc(g.id)+'">Delete group</button>';
+    return '<div class="prow"><div class="pname">'+esc(g.name)+(own?'':' · '+esc(ow?ow.name:'another teacher'))+'</div><div class="sub">'+n+' student'+(n===1?'':'s')+'. Tap a name to add or remove it.</div>'+chips+'<div class="tact">'+del+'</div></div>';
+  }).join(''):'<div class="empty">No groups yet. A group is a set of students you can give homework to in one tap.</div>';
+  return h+'<form class="inline" data-form="addgrp"><input id="n-grp" type="text" maxlength="60" placeholder="Group name, e.g. Maths set A" aria-label="Group name" autocomplete="off"><button class="btn primary" type="submit">Add group</button></form>';
+}
 function renderPeople(){
   var box=$('#people'),m=me();
-  if(m.role!=='teacher'&&m.role!=='parent'){box.hidden=true;return}
+  if(m.role!=='teacher'&&m.role!=='classteacher'&&m.role!=='parent'){box.hidden=true;box.innerHTML='';return}
   var h='';
   if(m.role==='teacher'){
-    var all=Array.from(people.values()),by=function(r){return all.filter(function(p){return p.role===r}).sort(function(a,b){return a.name.localeCompare(b.name)})};
-    var st=by('student'),pa=by('parent'),te=by('teacher');
+    var all=Array.from(people.values()),by=function(r){return all.filter(function(p){return p.role===r}).sort(byName)};
+    var st=by('student'),pa=by('parent'),te=by('teacher'),ct=by('classteacher');
     h+='<div class="upd-head"><h2>People</h2></div><h3>Students</h3>'+
-      (st.length?st.map(function(p){return personRow(p,'',true,true)}).join(''):'<div class="empty">No students yet.</div>')+
+      (st.length?st.map(function(p){
+        var cn=p.teachers.map(function(id){var t=people.get(id);return t?t.name:''}).filter(Boolean);
+        return personRow(p,cn.length?'<div class="sub">Class: '+esc(cn.join(', '))+'</div>':'',true,true);
+      }).join(''):'<div class="empty">No students yet.</div>')+
       '<form class="inline" data-form="addstu"><input id="n-stu" type="text" maxlength="60" placeholder="Student name" aria-label="Student name" autocomplete="off"><button class="btn primary" type="submit">Add student</button></form>'+
       '<h3>Parents</h3>'+
       (pa.length?pa.map(function(p){
@@ -798,8 +864,20 @@ function renderPeople(){
         return personRow(p,'<div class="sub">Linked children (tap to link or unlink)</div>'+chips,true,true);
       }).join(''):'<div class="empty">No parents yet.</div>')+
       '<form class="inline" data-form="addpar"><input id="n-par" type="text" maxlength="60" placeholder="Parent name" aria-label="Parent name" autocomplete="off"><button class="btn primary" type="submit">Add parent</button></form>'+
-      '<h3>Teachers</h3>'+te.map(function(p){var self=p.pid===acct.pid;return personRow(p,'',!self,!self)}).join('')+
-      '<form class="inline" data-form="addtea"><input id="n-tea" type="text" maxlength="60" placeholder="Teacher name" aria-label="Teacher name" autocomplete="off"><button class="btn primary" type="submit">Add teacher</button></form>';
+      '<h3>Class teachers</h3>'+
+      (ct.length?ct.map(function(p){
+        var chips=st.length?'<div class="chips">'+st.map(function(s){return '<button class="dchip sm" type="button" data-act="cls" data-p="'+esc(p.pid)+'" data-sid="'+esc(s.pid)+'" aria-pressed="'+(s.teachers.indexOf(p.pid)>-1)+'">'+esc(s.name)+'</button>'}).join('')+'</div>':'<div class="sub">Add students to place them in a class.</div>';
+        return personRow(p,'<div class="sub">Her class (tap to add or remove). She sees only these students.</div>'+chips,true,true);
+      }).join(''):'<div class="empty">No class teachers yet. A class teacher sees only the students you place in her class, never the rest.</div>')+
+      '<form class="inline" data-form="addtea"><input id="n-tea" type="text" maxlength="60" placeholder="Class teacher name" aria-label="Class teacher name" autocomplete="off"><button class="btn primary" type="submit">Add class teacher</button></form>'+
+      '<h3>Admin teachers (see everyone)</h3>'+te.map(function(p){var self=p.pid===acct.pid;return personRow(p,'',!self,!self)}).join('')+
+      groupsBlock(st);
+  }else if(m.role==='classteacher'){
+    var mine2=students();
+    h+='<div class="upd-head"><h2>My students</h2></div>'+
+      (mine2.length?mine2.map(function(p){return personRow(p,'',false,true)}).join(''):'<div class="empty">No students in your class yet. Add one below, or ask the admin to place students in your class.</div>')+
+      '<form class="inline" data-form="addstu"><input id="n-stu" type="text" maxlength="60" placeholder="Student name" aria-label="Student name" autocomplete="off"><button class="btn primary" type="submit">Add student</button></form>'+
+      groupsBlock(mine2);
   }else{
     var mine=students().filter(function(s){return m.links.indexOf(s.pid)>-1});
     h+='<div class="upd-head"><h2>My children</h2></div>'+
@@ -817,7 +895,7 @@ function renderMain(today){
   renderUpdates(list);
   $('#work-title').textContent=overview?'Add homework':(kl.length&&(m.role!=='student'))?kidName(c)+"'s assignments":'Assignments';
   $('#open-add').hidden=!kl.filter(function(k){return k.id!=='unassigned'}).length;
-  $('#open-add').textContent=m.role==='teacher'?'Assign homework':'Add assignment';
+  $('#open-add').textContent=isStaff(m.role)?'Assign homework':'Add assignment';
   if(overview)$('#list').innerHTML='';else renderList(list,today,kl);
   renderPeople();
 }
@@ -863,6 +941,9 @@ document.addEventListener('click',function(e){
   if(act==='newid')return resetId(pid);
   if(act==='rm'){if(confirmId!=='rm:'+pid){confirmId='rm:'+pid;render();return}confirmId=null;return removePerson(pid)}
   if(act==='link')return toggleLink(pid,b.dataset.sid);
+  if(act==='cls')return toggleClass(pid,b.dataset.sid);
+  if(act==='gm')return toggleMember(b.dataset.g,b.dataset.sid);
+  if(act==='gdel'){var gid=b.dataset.g;if(confirmId!=='g:'+gid){confirmId='g:'+gid;render();return}confirmId=null;fs.doc('groups/'+gid).delete().catch(writeFail);return}
   if(act==='all')return setDone(id,today,Number(b.dataset.n));
   if(act==='log'){
     var v=document.getElementById(b.dataset.src).value.trim();
@@ -914,7 +995,8 @@ document.addEventListener('submit',function(e){
   if(!acct)return;
   if(!val){toast('Enter a name first.');return}
   if(kind==='addchild')return createPerson('student',val,true);
-  createPerson(kind==='addstu'?'student':kind==='addpar'?'parent':'teacher',val,false);
+  if(kind==='addgrp'){createGroup(val);return}
+  createPerson(kind==='addstu'?'student':kind==='addpar'?'parent':'classteacher',val,false);
 });
 
 /* ---------- add assignment form ---------- */
@@ -962,7 +1044,7 @@ function rebuildChips(){
 }
 function updatePreview(){
   var v=readForm(),pv=$('#f-preview'),today=ymd(new Date());
-  if(me()&&me().role!=='teacher'&&v.total>=1&&v.dates.length){
+  if(me()&&!isStaff(me().role)&&v.total>=1&&v.dates.length){
     var p=planFor({total:v.total,dates:v.dates,due:v.due||'9999-12-31',done:{}},today);
     var chips=p.rows.slice(0,8).map(function(r){return '<span class="chip">'+esc(fmt(r.date))+' <i>'+r.target+'</i></span>'}).join('');
     var more=p.rows.length>8?'<span class="chip">+'+(p.rows.length-8)+' more days</span>':'';
@@ -970,7 +1052,23 @@ function updatePreview(){
   }else pv.hidden=true;
   updateSum();
 }
+function renderGroupChips(){
+  var gl=Array.from(groups.values()).filter(function(g){return g.members.some(isStudent)}).sort(byName);
+  $('#f-groups-wrap').hidden=!gl.length;
+  $('#f-groups').innerHTML=gl.map(function(g){
+    var mem=g.members.filter(isStudent),on=mem.every(function(x){return assignSel.has(x)});
+    return '<button type="button" class="dchip" data-grp="'+esc(g.id)+'" aria-pressed="'+on+'">'+esc(g.name)+'<small>'+mem.length+' student'+(mem.length===1?'':'s')+'</small></button>';
+  }).join('');
+}
+// the group name is stored on the homework only when the chosen students are exactly the members of the chosen groups
+function selectedGroupLabel(){
+  var names=[],cover=new Set();
+  groups.forEach(function(g){var mem=g.members.filter(isStudent);if(mem.length&&mem.every(function(x){return assignSel.has(x)})){names.push(g.name);mem.forEach(function(x){cover.add(x)})}});
+  var exact=names.length&&cover.size===assignSel.size;
+  return exact?names.sort().join(', ').slice(0,80):'';
+}
 function renderAssignChips(){
+  renderGroupChips();
   var today=ymd(new Date()),st=students();
   $('#f-assign').innerHTML=st.length?st.map(function(s){
     var its=Array.from(items.values()).filter(function(a){return a.studentId===s.pid}),wk=dayLoads(its,today,7).reduce(function(x,y){return x+y.n},0);
@@ -978,7 +1076,7 @@ function renderAssignChips(){
   }).join(''):'<span class="hint">Add students first, under People.</span>';
 }
 function openForm(){
-  var today=ymd(new Date()),m=me(),isT=m.role==='teacher',isP=m.role==='parent',kl=kidList().filter(function(k){return k.id!=='unassigned'}),sel=$('#f-for'),c=curKid();
+  var today=ymd(new Date()),m=me(),isT=isStaff(m.role),isP=m.role==='parent',kl=kidList().filter(function(k){return k.id!=='unassigned'}),sel=$('#f-for'),c=curKid();
   if(!$('#f-due').value)$('#f-due').value=nextFriday(today);
   $('#f-assign-wrap').hidden=!isT;$('#f-for-wrap').hidden=!(isP&&kl.length>=1);$('#f-days-wrap').hidden=isT;
   $('#f-submit').textContent=isT?'Assign homework':'Create plan';
@@ -1011,6 +1109,14 @@ $('#f-assign').addEventListener('click',function(e){
   var b=e.target.closest('[data-as]');if(!b)return;
   var pid=b.dataset.as;
   if(assignSel.has(pid)){assignSel.delete(pid);b.setAttribute('aria-pressed','false')}else{assignSel.add(pid);b.setAttribute('aria-pressed','true')}
+  renderGroupChips();
+});
+$('#f-groups').addEventListener('click',function(e){
+  var b=e.target.closest('[data-grp]');if(!b)return;
+  var g=groups.get(b.dataset.grp);if(!g)return;
+  var mem=g.members.filter(isStudent),on=mem.length>0&&mem.every(function(x){return assignSel.has(x)});
+  mem.forEach(function(x){if(on)assignSel.delete(x);else assignSel.add(x)});
+  renderAssignChips();
 });
 $('#as-all').addEventListener('click',function(){students().forEach(function(s){assignSel.add(s.pid)});renderAssignChips()});
 $('#as-none').addEventListener('click',function(){assignSel.clear();renderAssignChips()});
@@ -1028,7 +1134,7 @@ $('#pick-none').addEventListener('click',function(){
 });
 form.addEventListener('submit',function(e){
   e.preventDefault();
-  var v=readForm(),err=$('#f-err'),msg='',m=me(),isT=m.role==='teacher';
+  var v=readForm(),err=$('#f-err'),msg='',m=me(),isT=isStaff(m.role);
   var targets=isT?Array.from(assignSel).filter(isStudent):[kidForForm()];
   if(!targets.length||!targets[0])msg=isT?'Choose at least one student.':'Add a student first.';
   else if(!v.subject)msg='Enter the subject.';
@@ -1038,13 +1144,20 @@ form.addEventListener('submit',function(e){
   else if(!isT&&!v.dates.length)msg='Tap at least one day that can be used for this homework.';
   if(msg){err.textContent=msg;err.hidden=false;return}
   err.hidden=true;
-  var by=m.name||ROLE[m.role],b=fs.batch(),now=Date.now();
+  var by=m.name||ROLE[m.role],now=Date.now(),grp=isT?selectedGroupLabel():'',docs=[];
   targets.forEach(function(sid){
-    var id=newId('a');
-    b.set(fs.doc('assignments/'+id),{subject:v.subject.slice(0,60),title:v.title.slice(0,80),parts:v.parts,total:v.total,dates:isT?[]:v.dates,due:v.due,done:{},doneUnits:{},studentId:sid,byRole:m.role,byName:by.slice(0,60),created:now});
-    b.set(fs.doc('updates/'+id+'_created'),{aid:id,studentId:sid,subject:v.subject.slice(0,60),type:'created',n:v.total,days:isT?0:v.dates.length,date:isT?v.due:v.dates[0],byRole:m.role,byName:by.slice(0,60),at:now});
+    var id=newId('a'),d={subject:v.subject.slice(0,60),title:v.title.slice(0,80),parts:v.parts,total:v.total,dates:isT?[]:v.dates,due:v.due,done:{},doneUnits:{},studentId:sid,byRole:m.role,byName:by.slice(0,60),created:now};
+    if(grp)d.group=grp;
+    docs.push([id,d,{aid:id,studentId:sid,subject:v.subject.slice(0,60),type:'created',n:v.total,days:isT?0:v.dates.length,date:isT?v.due:v.dates[0],byRole:m.role,byName:by.slice(0,60),at:now}]);
   });
-  b.commit().catch(writeFail);
+  // Written in small batches: the security rules look up each student once per write, and Firestore caps how many lookups one batch may make.
+  (async function(){
+    for(var i=0;i<docs.length;i+=5){
+      var b=fs.batch();
+      docs.slice(i,i+5).forEach(function(x){b.set(fs.doc('assignments/'+x[0]),x[1]);b.set(fs.doc('updates/'+x[0]+'_created'),x[2])});
+      await b.commit();
+    }
+  })().catch(writeFail);
   if(m.role!=='student'&&kidList().length>=2&&targets.length===1)kid=targets[0];
   form.reset();picked.clear();fParts=null;buildPartsGrid();assignSel.clear();form.hidden=true;
   toast(isT?'Assigned to '+targets.length+' student'+(targets.length===1?'':'s')+'.':'Plan created.');render();
