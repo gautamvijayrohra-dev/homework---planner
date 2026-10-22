@@ -794,7 +794,7 @@ function renderGrid(a,today,p){
 function planPanel(a,today){
   var n=diffDays(today,a.due)+1;
   if(n<1)return '<div class="plan"><p class="err">The due date has passed. Use Add another day to schedule more time.</p><div class="tact"><button class="btn small" data-act="cancelplan">Close</button></div></div>';
-  var others=Array.from(items.values()).filter(function(x){return itemKid(x)===itemKid(a)&&x.id!==a.id}),lm=loadMap(others,today),cap=Math.min(n,42),h='';
+  var others=Array.from(items.values()).filter(function(x){return itemKid(x)===itemKid(a)&&x.id!==a.id&&(x.kind==='study')===(a.kind==='study')}),lm=loadMap(others,today),cap=Math.min(n,42),h='';
   for(var i=0;i<cap;i++){
     var d=addDays(today,i),logged=a.done[d]!==undefined,on=planning.set.has(d)||logged;
     h+='<button type="button" class="dchip" data-pd="'+d+'" aria-pressed="'+on+'"'+(logged?' disabled':'')+'>'+esc(fmt(d))+'<small>'+(lm[d]||0)+' already</small></button>';
@@ -857,7 +857,7 @@ function changeDue(list,fn){
 }
 function renderList(list,today,kl){
   if(!list.length){
-    var m=me(),msg=tab==='study'?(kl.length?'No study plans yet.'+(isStaff(m.role)?' Students add their own study plans here, and you can see them.':' Tap Add study plan to plan revision or reading for a subject, for example 5 chapters over the next 10 days.'):'Nothing to show yet.'):!kl.length?(m.role==='teacher'?'No students yet. Add one under People below.':m.role==='classteacher'?'No students are in your class yet. Add one under My students below, or ask the admin to place students in your class.':m.role==='parent'?'No children are linked to you yet. Add a child under My children below, or ask the teacher to link one.':'No homework yet.')
+    var m=me(),msg=tab==='study'?(kl.length?'No study plans yet.'+(isStaff(m.role)?' Students add their own study plans here, and you can see them.':' Tap Add study plan, type a subject, pick your target date and the days you will study it. For example 5 chapters by the 30th over 10 chosen days.'):'Nothing to show yet.'):!kl.length?(m.role==='teacher'?'No students yet. Add one under People below.':m.role==='classteacher'?'No students are in your class yet. Add one under My students below, or ask the admin to place students in your class.':m.role==='parent'?'No children are linked to you yet. Add a child under My children below, or ask the teacher to link one.':'No homework yet.')
       :(isStaff(m.role)?'No homework for this student yet. Tap Assign homework to assign some.':'No homework yet. Tap Add assignment. For example: 12 questions with 4 parts each, due Friday, worked on over 3 chosen days, comes out as 16 a day.');
     $('#list').innerHTML='<div class="card empty">'+msg+'</div>';return;
   }
@@ -1099,7 +1099,7 @@ function rebuildChips(){
   if(!DATE_RE.test(due)){picked.clear();av.textContent='Pick the due date first.';updatePreview();return}
   var n=diffDays(today,due)+1;
   if(n<1){picked.clear();av.textContent='That due date has already passed.';updatePreview();return}
-  var kidId=kidForForm(),mine=Array.from(items.values()).filter(function(a){return itemKid(a)===kidId}),lm=loadMap(mine,today);
+  var kidId=kidForForm(),mine=Array.from(items.values()).filter(function(a){return itemKid(a)===kidId&&(a.kind==='study')===(tab==='study')}),lm=loadMap(mine,today);
   var cap=Math.min(n,42),keep=new Set(),html='';
   for(var i=0;i<cap;i++){
     var d=addDays(today,i),on=picked.has(d);if(on)keep.add(d);
@@ -1138,24 +1138,28 @@ function renderAssignChips(){
   renderGroupChips();
   var today=ymd(new Date()),st=students();
   $('#f-assign').innerHTML=st.length?st.map(function(s){
-    var its=Array.from(items.values()).filter(function(a){return a.studentId===s.pid}),wk=dayLoads(its,today,7).reduce(function(x,y){return x+y.n},0);
+    var its=Array.from(items.values()).filter(function(a){return a.studentId===s.pid&&a.kind!=='study'}),wk=dayLoads(its,today,7).reduce(function(x,y){return x+y.n},0);
     return '<button type="button" class="dchip" data-as="'+esc(s.pid)+'" aria-pressed="'+assignSel.has(s.pid)+'">'+esc(s.name)+'<small>'+wk+' this week</small></button>';
   }).join(''):'<span class="hint">Add students first, under People.</span>';
 }
 var COMMON=['Maths','English','Hindi','Science','Social Studies','Computer','Languages','Art','General Knowledge','Environmental Studies'];
-// Study Planner suggests the subjects that have no homework running right now; any subject can still be typed
 function fillSubjects(){
-  var dl=$('#subj-list'),k=kidForForm(),busy=new Set();
-  if(tab==='study')items.forEach(function(a){if(a.studentId===k&&a.kind!=='study'&&!planFor(a,ymd(new Date())).complete)busy.add(a.subject.toLowerCase())});
-  dl.innerHTML=COMMON.filter(function(x){return !busy.has(x.toLowerCase())}).map(function(x){return '<option value="'+esc(x)+'">'}).join('');
+  $('#subj-list').innerHTML=COMMON.map(function(x){return '<option value="'+esc(x)+'">'}).join('');
+}
+function setFormLabels(isT,isP){
+  var st=tab==='study'&&!isT,set=function(sel,t){var e=document.querySelector(sel);if(e)e.textContent=t};
+  set('label[for="f-due"]',st?'Target date to finish':'Due date');
+  set('label[for="f-q"]',st?'Number of questions or topics':'Number of questions');
+  set('label[for="f-title"]',st?'Topic (optional)':'Details (optional)');
+  $('#f-title').placeholder=st?'Chapters 1 to 5 revision':'Chapter 5, exercise 5.2';
+  $('#f-dates-l').textContent=st?(isP?'Which days will they study this subject?':'Which days will you study this subject?'):(isP?'Which days can they work on this homework?':'Which days can you work on this homework?');
+  $('#f-submit').textContent=isT?'Assign homework':st?'Create study plan':'Create plan';
 }
 function openForm(){
   var today=ymd(new Date()),m=me(),isT=isStaff(m.role),isP=m.role==='parent',kl=kidList().filter(function(k){return k.id!=='unassigned'}),sel=$('#f-for'),c=curKid();
   if(!$('#f-due').value)$('#f-due').value=nextFriday(today);
   $('#f-assign-wrap').hidden=!isT;$('#f-for-wrap').hidden=!(isP&&kl.length>=1);$('#f-days-wrap').hidden=isT;
-  $('#f-submit').textContent=isT?'Assign homework':'Create plan';
-  fillSubjects();
-  $('#f-dates-l').textContent=isP?'Which days can they work on this homework?':'Which days can you work on this homework?';
+  fillSubjects();setFormLabels(isT,isP);
   sel.innerHTML=kl.map(function(k){return '<option value="'+esc(k.id)+'">'+esc(k.name)+'</option>'}).join('');
   if(c!=='all'&&kl.some(function(k){return k.id===c}))sel.value=c;
   if(isT){assignSel=new Set(c!=='all'&&isStudent(c)?[c]:[]);renderAssignChips()}
@@ -1165,7 +1169,7 @@ function openForm(){
 $('#open-add').addEventListener('click',openForm);
 $('#cancel-add').addEventListener('click',function(){form.hidden=true;$('#f-err').hidden=true});
 $('#f-due').addEventListener('input',rebuildChips);
-$('#f-for').addEventListener('change',function(){rebuildChips();fillSubjects()});
+$('#f-for').addEventListener('change',rebuildChips);
 $('#f-q').addEventListener('input',function(){if(fParts)buildPartsGrid();updatePreview()});
 $('#f-p').addEventListener('input',function(){if(fParts)buildPartsGrid();updatePreview()});
 $('#f-custom').addEventListener('click',function(){
