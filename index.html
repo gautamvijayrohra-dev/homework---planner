@@ -154,6 +154,18 @@ details.qgrid summary{cursor:pointer;font-weight:600;font-size:.9rem}
 .pgrid{display:flex;flex-wrap:wrap;gap:8px}
 .pgrid label{display:flex;align-items:center;gap:6px;font-size:.85rem}
 .byline{font-size:.8rem;color:var(--muted)}
+.ttrow{display:grid;grid-template-columns:96px 1fr;gap:2px 12px;padding:10px 16px;border-top:1px solid var(--line)}
+.ttrow:first-child{border-top:0}
+.ttime{font:500 .8rem var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums;padding-top:2px}
+.ttitle{font-weight:600;overflow-wrap:anywhere}
+.ttrow.fixed .ttitle{color:var(--muted);font-weight:500}
+.ttrow.block{background:var(--soft)}
+.ttrow.free .ttitle{color:var(--muted);font-weight:500;font-style:italic}
+.ttrow.clash{background:var(--warn-soft)}
+.tag{font:600 .7rem var(--font-body);padding:3px 7px;border-radius:999px;background:var(--card);color:var(--accent);margin-left:6px;white-space:nowrap}
+.ttrow input[type=time]{width:auto;min-height:36px;margin-top:6px;max-width:150px}
+details.ttset summary{cursor:pointer;font:800 1.15rem var(--font-display);padding:16px}
+.tdrow{display:grid;gap:8px;padding:10px 0;border-top:1px solid var(--line)}
 @media (prefers-reduced-motion:no-preference){.bar > div{transition:width .3s ease}}
 </style>
 </head>
@@ -179,12 +191,20 @@ details.qgrid summary{cursor:pointer;font-weight:600;font-size:.9rem}
     <div class="kids" id="tabs" role="group" aria-label="Section">
       <button class="kid" type="button" data-tab="homework" aria-pressed="true">Homework</button>
       <button class="kid" type="button" data-tab="study" aria-pressed="false">Study Planner</button>
+      <button class="kid" type="button" data-tab="tt" aria-pressed="false">Time Table</button>
     </div>
     <section class="card" id="overview" aria-label="Overview" hidden></section>
     <section class="card" id="today" aria-label="Today"></section>
     <section class="card" id="week" aria-label="Workload" hidden></section>
     <section class="card" id="updates" aria-label="Recent updates" hidden></section>
     <section class="card people" id="duebox" aria-label="Change due dates" hidden></section>
+
+    <section style="display:grid;gap:16px" id="tt" hidden>
+      <p class="card empty" id="tt-pick" hidden>Choose a child above to see their time table.</p>
+      <section class="card" id="tt-speed" aria-label="Time per question"></section>
+      <section class="card" id="tt-day" aria-label="Day plan"></section>
+      <section class="card" id="tt-set" aria-label="My day"></section>
+    </section>
 
     <section style="display:grid;gap:12px" id="work">
       <div class="sec-head">
@@ -329,6 +349,72 @@ function toggleUnit(a,idx,date){var du=Object.assign({},a.doneUnits);if(du[idx]!
 function qDone(a){var off=0,c=0;a.parts.forEach(function(n){var ok=true;for(var j=0;j<n;j++)if(a.doneUnits[off+j]===undefined)ok=false;if(ok)c++;off+=n});return c}
 function loadMap(list,today){var m={};list.forEach(function(a){planFor(a,today).rows.forEach(function(r){var n=r.state==='logged'?r.done:(r.target||0);if(n)m[r.date]=(m[r.date]||0)+n})});return m}
 function dayLoads(list,today,n){var m=loadMap(list,today),out=[];for(var i=0;i<n;i++){var d=addDays(today,i);out.push({date:d,n:m[d]||0})}return out}
+function toMin(t){var m=/^(\d{1,2}):(\d{2})$/.exec(String(t||''));if(!m)return null;var h=+m[1],n=+m[2];return(h<24&&n<60)?h*60+n:null}
+function fromMin(x){x=Math.max(0,Math.min(1439,Math.round(x)));return String(Math.floor(x/60)).padStart(2,'0')+':'+String(x%60).padStart(2,'0')}
+function fmtMin(m){m=Math.round(m);if(m<60)return m+' min';var h=Math.floor(m/60),r=m%60;return h+' h'+(r?' '+r+' min':'')}
+function defRoutine(){return{wake:'06:30',sleep:'21:30',schoolDays:[1,2,3,4,5],schoolStart:'08:00',schoolEnd:'15:00',travelTo:30,travelBack:30,rest:30,gap:10,perQ:5,useAvg:false,tuition:[],edits:{}}}
+// Minutes per question: your own average (once there are 5 or more questions with a time) if switched on, otherwise the fixed number (5 by default).
+function avgStats(list,subject){
+  var mins=0,units=0,logs=0;
+  list.forEach(function(a){
+    if(subject&&a.subject!==subject)return;
+    var m=a.mins||{};
+    for(var d in m){var n=(a.done&&a.done[d])||0,v=Number(m[d]);if(v>0&&n>0){mins+=v;units+=n;logs++}}
+  });
+  return{mins:mins,units:units,logs:logs,avg:units?mins/units:0};
+}
+function perQcalc(r,list,subject){
+  var base=(r&&r.perQ>0)?r.perQ:5;
+  if(r&&r.useAvg){var s=avgStats(list,subject);if(s.units>=5)return s.mins/s.units;var o=avgStats(list);if(o.units>=5)return o.mins/o.units}
+  return base;
+}
+// Fixed parts of a day: travel, school, rest, tuition. Times are minutes after midnight.
+function fixedEvents(r,date){
+  var dow=parse(date).getDay(),ev=[];
+  if(r.schoolDays.indexOf(dow)>-1){
+    var s=toMin(r.schoolStart),e=toMin(r.schoolEnd);
+    if(s!==null&&e!==null&&e>s){
+      if(r.travelTo>0)ev.push({s:s-r.travelTo,e:s,label:'Travel to school',type:'travel'});
+      ev.push({s:s,e:e,label:'School',type:'school'});
+      if(r.travelBack>0)ev.push({s:e,e:e+r.travelBack,label:'Travel home',type:'travel'});
+      if(r.rest>0)ev.push({s:e+r.travelBack,e:e+r.travelBack+r.rest,label:'Rest and snack',type:'rest'});
+    }
+  }
+  (r.tuition||[]).forEach(function(t){
+    if(t.days.indexOf(dow)<0)return;
+    var s=toMin(t.start),e=toMin(t.end);
+    if(s!==null&&e!==null&&e>s)ev.push({s:s,e:e,label:t.label||'Tuition',type:'tuition'});
+  });
+  return ev;
+}
+// work: [{key,min,...}] study blocks for the day. A block the student moved (r.edits[date][key]) stays where they put it;
+// the rest go into the free gaps in order, first fit, with a short break after each.
+function buildDay(r,date,work){
+  var fixed=fixedEvents(r,date),ed=(r.edits&&r.edits[date])||{},manual=[],auto=[],over=[];
+  work.forEach(function(w){
+    var t=ed[w.key]!==undefined?toMin(ed[w.key]):null;
+    if(t!==null)manual.push(Object.assign({},w,{s:t,e:t+w.min,manual:true}));else auto.push(w);
+  });
+  var wake=toMin(r.wake),sleep=toMin(r.sleep),slots=[],cur=wake;
+  // on a school day the morning is for getting ready: study time starts after school, travel and rest
+  fixed.forEach(function(f){if(f.type!=='tuition')cur=Math.max(cur,f.e)});
+  var occ=fixed.concat(manual).map(function(x){return{s:x.s,e:x.e}}).sort(function(a,b){return a.s-b.s});
+  occ.forEach(function(o){if(o.s>cur)slots.push({s:cur,e:Math.min(o.s,sleep)});cur=Math.max(cur,o.e)});
+  if(cur<sleep)slots.push({s:cur,e:sleep});
+  slots=slots.filter(function(x){return x.e>x.s});
+  var freeMin=slots.reduce(function(t,x){return t+x.e-x.s},0),placed=[];
+  auto.forEach(function(w){
+    for(var i=0;i<slots.length;i++){
+      var sl=slots[i];
+      if(sl.e-sl.s>=w.min){placed.push(Object.assign({},w,{s:sl.s,e:sl.s+w.min}));sl.s+=w.min+(r.gap||0);return}
+    }
+    over.push(w);
+  });
+  var blocks=placed.concat(manual).sort(function(a,b){return a.s-b.s});
+  function hit(a,b){return a.s<b.e&&b.s<a.e}
+  blocks.forEach(function(b){b.clash=fixed.some(function(f){return hit(f,b)})||blocks.some(function(o){return o!==b&&hit(o,b)})});
+  return{fixed:fixed,blocks:blocks,over:over,free:slots.filter(function(x){return x.e-x.s>=20}),freeMin:freeMin};
+}
 function normCode(s){return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'')}
 //#logic-end
 
@@ -347,7 +433,7 @@ function loginPass(norm){return 'hwp1-'+norm}
 var CFG=window.FIREBASE_CONFIG||{};
 var fb=null,auth=null,fs=null,secApp=null;
 var fatal='',authKnown=false,setupChecked=false,setupDone=false,settingUp=false,sessionLoading=false,working=false;
-var acct=null,items=new Map(),people=new Map(),updates=[],groups=new Map();
+var acct=null,items=new Map(),people=new Map(),updates=[],groups=new Map(),routines=new Map();
 var itemSrc={},updSrc={},peopleSrc={},unsubs={},kidSubbed={},subErr=false;
 var loginRole=null,loginErr='',loginBusy=false,kid=null,picked=new Set(),reveal=null,confirmId=null,toastTimer=null;
 var tab='homework',planning=null,openGrids=new Set(),assignSel=new Set(),fParts=null;
@@ -378,7 +464,9 @@ function clean(id,d){
     var ix=Number(u);
     if(Number.isInteger(ix)&&ix>=0&&ix<total&&DATE_RE.test(String(d.doneUnits[u])))du[ix]=d.doneUnits[u];
   }
-  return{id:id,subject:String(d.subject||'Homework').slice(0,60),title:String(d.title||'').slice(0,80),parts:parts,total:total,dates:dates,due:d.due,done:done,doneUnits:du,
+  var mins={};
+  if(d.mins&&typeof d.mins==='object')for(var mk in d.mins){var mv=Number(d.mins[mk]);if(DATE_RE.test(mk)&&Number.isFinite(mv)&&mv>0)mins[mk]=Math.min(1440,Math.round(mv))}
+  return{id:id,subject:String(d.subject||'Homework').slice(0,60),title:String(d.title||'').slice(0,80),parts:parts,total:total,dates:dates,due:d.due,done:done,doneUnits:du,mins:mins,
     studentId:String(d.studentId||''),byRole:String(d.byRole||''),byName:String(d.byName||'').slice(0,60),group:String(d.group||'').slice(0,80),kind:d.kind==='study'?'study':'homework',created:Number(d.created)||0};
 }
 function personFrom(doc){
@@ -388,6 +476,36 @@ function personFrom(doc){
 function groupFrom(doc){
   var x=doc.data()||{};
   return{id:doc.id,name:String(x.name||'Group').slice(0,60),ownerPid:String(x.ownerPid||''),members:Array.isArray(x.members)?x.members.filter(function(s){return typeof s==='string'}):[]};
+}
+function cleanRoutine(x){
+  var d=defRoutine();x=x||{};
+  function t(v,f){return toMin(v)!==null?v:f}
+  function n(v,f,lo,hi){v=Number(v);return Number.isFinite(v)?Math.max(lo,Math.min(hi,v)):f}
+  function days(a){return Array.isArray(a)?a.filter(function(v){return Number.isInteger(v)&&v>=0&&v<=6}):[]}
+  var r={wake:t(x.wake,d.wake),sleep:t(x.sleep,d.sleep),schoolStart:t(x.schoolStart,d.schoolStart),schoolEnd:t(x.schoolEnd,d.schoolEnd),
+    travelTo:n(x.travelTo,d.travelTo,0,240),travelBack:n(x.travelBack,d.travelBack,0,240),rest:n(x.rest,d.rest,0,240),gap:n(x.gap,d.gap,0,60),
+    perQ:n(x.perQ,d.perQ,1,120),useAvg:!!x.useAvg,schoolDays:Array.isArray(x.schoolDays)?days(x.schoolDays):d.schoolDays,edits:{}};
+  r.tuition=Array.isArray(x.tuition)?x.tuition.slice(0,10).map(function(u){u=u||{};return{label:String(u.label||'Tuition').slice(0,40),days:days(u.days),start:t(u.start,'17:00'),end:t(u.end,'18:00')}}):[];
+  if(x.edits&&typeof x.edits==='object')for(var dt in x.edits){
+    if(!DATE_RE.test(dt)||!x.edits[dt]||typeof x.edits[dt]!=='object')continue;
+    var o={};for(var k in x.edits[dt])if(toMin(x.edits[dt][k])!==null)o[k]=x.edits[dt][k];
+    if(Object.keys(o).length)r.edits[dt]=o;
+  }
+  return r;
+}
+function routineOf(pid){return routines.get(pid)||null}
+function kidItems(pid){var o=[];items.forEach(function(a){if(a.studentId===pid)o.push(a)});return o}
+function perQOf(a){return perQcalc(routineOf(a.studentId),kidItems(a.studentId),a.subject)}
+function estMin(a,n){return n*perQOf(a)}
+function loadMins(list,today,n){
+  var m={};
+  list.forEach(function(a){planFor(a,today).rows.forEach(function(r){var c=r.state==='logged'?r.done:(r.target||0);if(c)m[r.date]=(m[r.date]||0)+c*perQOf(a)})});
+  var t=0;for(var i=0;i<n;i++)t+=m[addDays(today,i)]||0;return t;
+}
+function timeNote(a,p){
+  var s=[];if(p.remaining>0)s.push('About '+fmtMin(estMin(a,p.remaining))+' left');
+  var st=avgStats([a]);if(st.units)s.push('you average '+st.avg.toFixed(1)+' min per question here');
+  return s.length?'<div class="tmeta">'+esc(s.join(' · '))+'</div>':'';
 }
 function newId(p){return (p||'a')+Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 
@@ -433,21 +551,24 @@ function rebuildPeople(){people=new Map();Object.keys(peopleSrc).forEach(functio
 function onItems(k){return function(s){itemSrc[k]=s.docs.map(function(d){return clean(d.id,d.data())}).filter(Boolean);rebuildItems();render()}}
 function onUpd(k){return function(s){updSrc[k]=s.docs.map(function(d){return d.data()});rebuildUpd();render()}}
 function onPeople(k){return function(s){peopleSrc[k]=s.docs.map(personFrom);rebuildPeople();if(k==='cls')syncKids();render()}}
+function onRoutine(pid){return function(d){if(d.exists)routines.set(pid,cleanRoutine(d.data()));else routines.delete(pid);render()}}
+function onRoutines(s){routines=new Map();s.docs.forEach(function(d){routines.set(d.id,cleanRoutine(d.data()))});render()}
 function onGroups(s){groups=new Map();s.docs.forEach(function(d){groups.set(d.id,groupFrom(d))});render()}
 function onPerson(k){return function(d){peopleSrc[k]=d.exists?[personFrom(d)]:[];rebuildPeople();if(k==='self')syncKids();render()}}
 function sub(key,ref,fn){
   if(unsubs[key])unsubs[key]();
   unsubs[key]=ref.onSnapshot(fn,function(e){
     // a child who was just unlinked or moved out of the class can no longer be read; that is expected
-    if(e&&e.code==='permission-denied'&&/^[pau]:/.test(key))return;
+    if(e&&e.code==='permission-denied'&&/^[paur]:/.test(key))return;
     subErr=true;if(key==='self'&&e&&e.code==='permission-denied')return;render();
   });
 }
-function unsubAll(){Object.keys(unsubs).forEach(function(k){try{unsubs[k]()}catch(e){}});unsubs={};kidSubbed={};itemSrc={};updSrc={};peopleSrc={};items=new Map();people=new Map();updates=[];groups=new Map();subErr=false}
+function unsubAll(){Object.keys(unsubs).forEach(function(k){try{unsubs[k]()}catch(e){}});unsubs={};kidSubbed={};itemSrc={};updSrc={};peopleSrc={};items=new Map();people=new Map();updates=[];groups=new Map();routines=new Map();subErr=false}
 function kidSubs(pid,withPerson){
   if(withPerson)sub('p:'+pid,fs.doc('people/'+pid),onPerson('p:'+pid));
   sub('a:'+pid,fs.collection('assignments').where('studentId','==',pid),onItems('a:'+pid));
   sub('u:'+pid,fs.collection('updates').where('studentId','==',pid).limit(120),onUpd('u:'+pid));
+  sub('r:'+pid,fs.doc('routines/'+pid),onRoutine(pid));
 }
 function syncKids(){
   if(!acct||(acct.role!=='parent'&&acct.role!=='classteacher'))return;
@@ -455,7 +576,7 @@ function syncKids(){
   want.forEach(function(sid){if(!kidSubbed[sid]){kidSubbed[sid]=true;kidSubs(sid,isP)}});
   Object.keys(kidSubbed).forEach(function(sid){
     if(want.indexOf(sid)<0){
-      ['p:','a:','u:'].forEach(function(p){if(unsubs[p+sid]){unsubs[p+sid]();delete unsubs[p+sid]}});
+      ['p:','a:','u:','r:'].forEach(function(p){if(unsubs[p+sid]){unsubs[p+sid]();delete unsubs[p+sid]}});routines.delete(sid);
       delete peopleSrc['p:'+sid];delete itemSrc['a:'+sid];delete updSrc['u:'+sid];delete kidSubbed[sid];
       rebuildPeople();rebuildItems();rebuildUpd();
     }
@@ -468,6 +589,7 @@ function subscribe(){
     sub('assign',fs.collection('assignments'),onItems('all'));
     sub('upd',fs.collection('updates').orderBy('at','desc').limit(80),onUpd('all'));
     sub('groups',fs.collection('groups'),onGroups);
+    sub('routines',fs.collection('routines'),onRoutines);
   }else if(acct.role==='classteacher'){
     // a class teacher only ever reads her own record, the students placed in her class, and her own groups
     sub('self',fs.doc('people/'+acct.pid),onPerson('self'));
@@ -585,6 +707,7 @@ async function removePerson(pid){
   try{
     if(p.role==='student'){await delWhere('assignments',pid);await delWhere('updates',pid)}
     var b=fs.batch(),FV=firebase.firestore.FieldValue;b.delete(fs.doc('people/'+pid));if(p.accountUid)b.delete(fs.doc('accounts/'+p.accountUid));
+    if(p.role==='student')b.delete(fs.doc('routines/'+pid));
     if(p.role==='student')groups.forEach(function(g){if(g.members.indexOf(pid)>-1)b.update(fs.doc('groups/'+g.id),{members:FV.arrayRemove(pid)})});
     if(p.role==='classteacher'){
       students().forEach(function(st){if(st.teachers.indexOf(pid)>-1)b.update(fs.doc('people/'+st.pid),{teachers:FV.arrayRemove(pid)})});
@@ -616,13 +739,23 @@ function toggleMember(gid,sid){
 }
 
 /* ---------- homework writes ---------- */
-function save(a){var d=Object.assign({},a);delete d.id;fs.doc('assignments/'+a.id).set(d).catch(writeFail)}
+function save(a){var d=Object.assign({},a);delete d.id;if(d.mins&&!Object.keys(d.mins).length)delete d.mins;fs.doc('assignments/'+a.id).set(d).catch(writeFail)}
 function mutate(id,fn){var a=items.get(id);if(!a)return;save(fn(a))}
 function pushUpdate(u){var id=u.id,body=Object.assign({},u,{at:Date.now()});delete body.id;fs.doc('updates/'+id).set(body).catch(function(){})}
 function logUpdate(a,date,n){pushUpdate({id:a.id+'_'+date,aid:a.id,studentId:a.studentId,subject:a.subject,type:'log',date:date,n:n,total:a.total})}
-function setDone(id,date,n){
+function setDone(id,date,n,mins){
   var a=items.get(id);if(!a)return;
-  var r=logCount(a,date,n);save(Object.assign({},a,r));logUpdate(a,date,r.done[date]||0);
+  var r=logCount(a,date,n),mm=Object.assign({},a.mins);
+  if(mins!==undefined&&mins!==null){if(mins>0)mm[date]=mins;else delete mm[date]}
+  if(!r.done[date])delete mm[date];
+  save(Object.assign({},a,r,{mins:mm}));logUpdate(a,date,r.done[date]||0);
+}
+// minutes taken, typed next to a task: null = left blank, false = not a valid number
+function readMins(id){
+  var el=document.getElementById('tm-'+id);if(!el)return null;
+  var v=el.value.trim();if(v==='')return null;
+  if(!/^\d{1,4}$/.test(v)||Number(v)>1440){toast('Enter the minutes taken as a whole number, like 35.');return false}
+  return Number(v);
 }
 function tickUnit(id,idx,date){
   var a=items.get(id);if(!a)return;
@@ -633,7 +766,7 @@ function tickUnit(id,idx,date){
 /* ---------- rendering ---------- */
 function captureFocus(){
   var el=document.activeElement;
-  if(el&&el.id&&(el.tagName==='INPUT'||el.tagName==='SELECT')&&el.closest('#today,#list,#people,#login,#duebox'))return{id:el.id,v:el.value,s:el.selectionStart,e:el.selectionEnd};
+  if(el&&el.id&&(el.tagName==='INPUT'||el.tagName==='SELECT')&&el.closest('#today,#list,#people,#login,#duebox,#tt-day'))return{id:el.id,v:el.value,s:el.selectionStart,e:el.selectionEnd};
   return null;
 }
 function restoreFocus(f){
@@ -686,16 +819,16 @@ function renderKids(kl,c){
 }
 function renderOverview(kl,list,today){
   var h=kl.map(function(k){
-    var its=list.filter(function(a){return itemKid(a)===k.id}),done=0,total=0,todayN=0,behind=false,missed=false,unplanned=false,all=its.length>0;
+    var its=list.filter(function(a){return itemKid(a)===k.id}),done=0,total=0,todayN=0,todayMin=0,behind=false,missed=false,unplanned=false,all=its.length>0;
     its.forEach(function(a){
       var p=planFor(a,today),r=p.rows.find(function(x){return x.date===today});
       done+=Math.min(a.total,p.doneTotal);total+=a.total;
-      if(r&&r.state==='today')todayN+=r.target;
+      if(r&&r.state==='today'){todayN+=r.target;todayMin+=estMin(a,r.target)}
       if(p.behind)behind=true;if(p.missed)missed=true;if(p.unplanned&&!p.complete)unplanned=true;if(!p.complete)all=false;
     });
     var wk=dayLoads(its,today,7).reduce(function(s,x){return s+x.n},0);
     var chip=!its.length?'<span class="pill plain">No homework</span>':behind?'<span class="pill bad">Behind</span>':unplanned?'<span class="pill warn">Needs a plan</span>':all?'<span class="pill ok">All done</span>':missed?'<span class="pill warn">Rebalanced</span>':'<span class="pill ok">On track</span>';
-    var meta=its.length?its.length+' assignment'+(its.length===1?'':'s')+' · '+done+'/'+total+' done · today '+todayN+' · this week '+wk:'Nothing planned';
+    var meta=its.length?its.length+' assignment'+(its.length===1?'':'s')+' · '+done+'/'+total+' done · today '+todayN+(todayN?' ('+fmtMin(todayMin)+')':'')+' · this week '+wk:'Nothing planned';
     return '<button class="orow" type="button" data-kid="'+esc(k.id)+'"><span class="oname">'+esc(k.name)+'</span><span class="ometa">'+meta+'</span>'+chip+'</button>';
   }).join('');
   $('#overview').innerHTML='<div class="upd-head"><h2>Overview</h2></div>'+h;
@@ -705,40 +838,40 @@ function renderWeek(list,today,title){
   if(!list.length){box.hidden=true;return}
   var ld=dayLoads(list,today,7),max=Math.max(1,Math.max.apply(null,ld.map(function(x){return x.n}))),sum=ld.reduce(function(s,x){return s+x.n},0),unplanned=0;
   list.forEach(function(a){var p=planFor(a,today);if(p.unplanned&&!p.complete)unplanned+=p.remaining});
-  box.innerHTML='<div class="wk-head"><h2>'+esc(title)+'</h2><p class="sub">'+sum+' to do in the next 7 days'+(unplanned?' · '+unplanned+' not planned yet':'')+'</p></div><div class="week">'+
+  box.innerHTML='<div class="wk-head"><h2>'+esc(title)+'</h2><p class="sub">'+sum+' to do in the next 7 days'+(sum?' · about '+fmtMin(loadMins(list,today,7)):'')+(unplanned?' · '+unplanned+' not planned yet':'')+'</p></div><div class="week">'+
     ld.map(function(x,i){return '<div class="wd'+(i===0?' today':'')+'"><b>'+x.n+'</b><div class="wbar"><i style="height:'+Math.round(x.n/max*100)+'%"></i></div><span>'+esc(fmt(x.date,{weekday:'short'}))+'</span></div>'}).join('')+'</div>';
   box.hidden=false;
 }
 function renderToday(list,today){
-  var rows=[],sum=0,parts=[];
+  var rows=[],sum=0,sumMin=0,parts=[];
   list.forEach(function(a){
     var p=planFor(a,today),r=p.rows.find(function(x){return x.date===today});
     if(p.unplanned&&!p.complete)rows.push({a:a,p:p,r:'plan'});
-    else if(r&&r.state==='today'&&p.remaining>0){rows.push({a:a,p:p,r:r});sum+=r.target;parts.push(r.target+' '+esc(a.subject))}
+    else if(r&&r.state==='today'&&p.remaining>0){rows.push({a:a,p:p,r:r});sum+=r.target;sumMin+=estMin(a,r.target);parts.push(r.target+' '+esc(a.subject))}
     else if(r&&r.state==='logged'){rows.push({a:a,p:p,r:r})}
     else if(p.behind){rows.push({a:a,p:p,r:null})}
   });
   var head;
-  if(sum>0)head='<div class="today-head"><h2>Today</h2><div class="total">'+sum+'<small>question'+(sum===1?'':'s')+' to do</small></div><div class="parts">'+parts.join(' · ')+'</div></div>';
+  if(sum>0)head='<div class="today-head"><h2>Today</h2><div class="total">'+sum+'<small>question'+(sum===1?'':'s')+' to do</small></div><div class="parts">'+parts.join(' · ')+' · about '+fmtMin(sumMin)+'</div>'+(avgStats(list).units?'<div class="parts">Your average so far: '+avgStats(list).avg.toFixed(1)+' min per question</div>':'')+'</div>';
   else if(rows.length&&rows.every(function(x){return x.r==='plan'}))head='<div class="today-head"><h2>Today</h2><div class="total">Plan<small>choose the working days</small></div></div>';
   else if(rows.length)head='<div class="today-head"><h2>Today</h2><div class="total">Logged<small>nothing else planned</small></div></div>';
   else head='<div class="today-head"><h2>Today</h2><div class="total">Free day<small>nothing planned</small></div></div>';
   var body=rows.map(function(x){
     var a=x.a,p=x.p,r=x.r,id=esc(a.id),labels=unitLabels(a.parts),meta=p.remaining+' left of '+a.total+' · due '+esc(fmt(a.due)),num,act='',nextL='';
     if(r==='plan'){
-      num=p.remaining+'<span>to do, needs a plan</span>';
+      num=p.remaining+'<span>to do, needs a plan · about '+fmtMin(estMin(a,p.remaining))+'</span>';
       act='<div class="tact"><button class="btn primary" data-act="plan" data-id="'+id+'">Choose days</button></div>';
     }else if(!r){
-      num=p.remaining+'<span>left, no days remain</span>';
+      num=p.remaining+'<span>left, no days remain · about '+fmtMin(estMin(a,p.remaining))+'</span>';
       act='<div class="tact"><button class="btn primary" data-act="addday" data-id="'+id+'">Add another day</button></div>';
     }else if(r.state==='logged'){
-      num=r.done+'<span>done today</span>';
+      num=r.done+'<span>done today'+(a.mins&&a.mins[today]?' in '+fmtMin(a.mins[today]):'')+'</span>';
       if(r.done)nextL='Done: '+runsLabel(labels,unitsOn(a.doneUnits,today));
-      act='<div class="tact"><input class="num-in" id="tl-'+id+'" inputmode="numeric" value="'+r.done+'" aria-label="Questions done today in '+esc(a.subject)+'"><button class="btn" data-act="log" data-id="'+id+'" data-src="tl-'+id+'">Update</button></div>';
+      act='<div class="tact"><input class="num-in" id="tl-'+id+'" inputmode="numeric" value="'+r.done+'" aria-label="Questions done today in '+esc(a.subject)+'"><input class="num-in" id="tm-'+id+'" inputmode="numeric" placeholder="mins taken" value="'+(a.mins&&a.mins[today]||'')+'" aria-label="Minutes taken on '+esc(a.subject)+'"><button class="btn" data-act="log" data-id="'+id+'" data-src="tl-'+id+'">Update</button></div>';
     }else{
-      num=r.target+'<span>to do today</span>';
+      num=r.target+'<span>to do today · about '+fmtMin(estMin(a,r.target))+'</span>';
       nextL='Next: '+runsLabel(labels,nextUndone(a.total,a.doneUnits,r.target));
-      act='<div class="tact"><button class="btn primary" data-act="all" data-id="'+id+'" data-n="'+r.target+'">Did all '+r.target+'</button><input class="num-in" id="tl-'+id+'" inputmode="numeric" placeholder="other" aria-label="Questions done today in '+esc(a.subject)+'"><button class="btn" data-act="log" data-id="'+id+'" data-src="tl-'+id+'">Log</button></div>';
+      act='<div class="tact"><button class="btn primary" data-act="all" data-id="'+id+'" data-n="'+r.target+'">Did all '+r.target+'</button><input class="num-in" id="tl-'+id+'" inputmode="numeric" placeholder="other" aria-label="Questions done today in '+esc(a.subject)+'"><input class="num-in" id="tm-'+id+'" inputmode="numeric" placeholder="mins taken" aria-label="Minutes taken on '+esc(a.subject)+'"><button class="btn" data-act="log" data-id="'+id+'" data-src="tl-'+id+'">Log</button></div>';
     }
     return '<div class="trow"><div class="tsub">'+esc(a.subject)+(a.title?' · '+esc(a.title):'')+'</div><div class="tnum">'+num+'</div>'+(nextL?'<div class="tmeta">'+esc(nextL)+'</div>':'')+act+'<div class="tmeta">'+meta+'</div></div>';
   }).join('');
@@ -763,9 +896,9 @@ function renderUpdates(list){
 }
 function dayRow(a,r,today,sub){
   var id=esc(a.id),label,cls='';
-  if(r.state==='logged'){label='✓ done';cls='good'}
+  if(r.state==='logged'){label='✓ done'+(a.mins&&a.mins[r.date]?' · '+fmtMin(a.mins[r.date]):'');cls='good'}
   else if(r.state==='missed'){label='Missed';cls='bad'}
-  else label='Do '+r.target;
+  else label='Do '+r.target+' · '+fmtMin(estMin(a,r.target));
   var input='<span></span>';
   if(r.date<=today)input='<input class="plog" id="pl-'+id+'-'+r.date+'" data-id="'+id+'" data-date="'+r.date+'" inputmode="numeric" placeholder="done" value="'+(r.state==='logged'?r.done:'')+'" aria-label="Questions done on '+esc(fmt(r.date))+'">';
   return '<li class="day'+(r.date===today?' is-today':'')+'"><span class="dname">'+esc(fmt(r.date))+(r.date===today?' · today':'')+(sub?'<span class="dsub">'+esc(sub)+'</span>':'')+'</span><span class="dstate '+cls+'">'+label+'</span>'+input+'</li>';
@@ -876,7 +1009,7 @@ function renderList(list,today,kl){
     var by=byLabel(a);
     return '<article class="card acard"><div class="ahead"><div><div class="aname">'+esc(a.subject)+'</div>'+(a.title?'<div class="ameta">'+esc(a.title)+'</div>':'')+'<div class="ameta">Due '+esc(fmt(a.due))+(by?' · '+esc(by):'')+'</div></div>'+chip+'</div>'+
       '<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="'+a.total+'" aria-valuenow="'+Math.min(a.total,p.doneTotal)+'"><div style="width:'+pct+'%"></div></div>'+
-      '<div class="count">'+Math.min(a.total,p.doneTotal)+' / '+a.total+(single?' questions':' sub-questions')+' done · '+p.remaining+' left</div>'+
+      '<div class="count">'+Math.min(a.total,p.doneTotal)+' / '+a.total+(single?' questions':' sub-questions')+' done · '+p.remaining+' left</div>'+timeNote(a,p)+
       (p.unplanned?'<p class="err">No working days chosen yet. Tap Choose days.</p>':p.behind?'<p class="err">'+p.remaining+' left and no chosen days remain. Add another day to spread them out.</p>':'')+
       (planning&&planning.id===a.id?planPanel(a,today):'')+
       (p.rows.length?'<ul class="days">'+dayRows(a,p,today)+'</ul>':'')+
@@ -941,9 +1074,125 @@ function renderPeople(){
   }
   box.innerHTML=h;box.hidden=false;
 }
+/* ---------- Time Table ---------- */
+var ttDay=null,ttDraft=null,ttSetKey='',ttDirty=false,ttKid=null,ttOpen=null;
+var DOWS=[[1,'Mon'],[2,'Tue'],[3,'Wed'],[4,'Thu'],[5,'Fri'],[6,'Sat'],[0,'Sun']];
+// The study blocks for one day: every homework and study plan with something planned that day, split into sessions of at most 45 minutes.
+function workForDay(kidId,date,today){
+  var list=kidItems(kidId),r=routineOf(kidId)||defRoutine(),w=[];
+  list.sort(function(x,y){return (x.kind==='study')-(y.kind==='study')||x.due.localeCompare(y.due)||x.subject.localeCompare(y.subject)});
+  list.forEach(function(a){
+    var row=planFor(a,today).rows.find(function(x){return x.date===date});
+    if(!row||!row.target||(row.state!=='today'&&row.state!=='upcoming'))return;
+    var pq=perQcalc(r,list,a.subject),M=Math.max(5,Math.round(row.target*pq/5)*5),n=Math.ceil(M/45),size=Math.ceil(M/n),left=M;
+    for(var k=0;k<n;k++){var mm=Math.min(size,left);left-=mm;w.push({key:a.id+'~'+k,aid:a.id,subject:a.subject,kind:a.kind,min:mm,part:k+1,parts:n,q:row.target})}
+  });
+  return w;
+}
+function renderSpeed(kidId,r){
+  var list=kidItems(kidId),st=avgStats(list),seen={},chips='';
+  list.forEach(function(a){if(!seen[a.subject]){seen[a.subject]=1;var x=avgStats(list,a.subject);if(x.units)chips+='<span class="chip">'+esc(a.subject)+' <i>'+x.avg.toFixed(1)+' min</i></span>'}});
+  $('#tt-speed').innerHTML='<div class="upd-head"><h2>Time per question</h2></div><div class="prow"><div>'+
+    (st.units?'Average <b>'+st.avg.toFixed(1)+' min</b> per question, from '+st.units+' questions with a time written down.':'No times written down yet. When you log work in Homework or Study Planner, type the minutes it took. Until then every question counts as '+r.perQ+' min.')+'</div>'+
+    (chips?'<div class="chips">'+chips+'</div>':'')+
+    '<div class="sub">'+(r.useAvg?'Estimates use your own average once there are at least 5 timed questions.':'Estimates use '+r.perQ+' min per question. You can switch to your own average under My day.')+'</div></div>';
+}
+function renderTTDay(kidId,today,r,canEdit){
+  var date=ttDay&&ttDay>=today&&diffDays(today,ttDay)<7?ttDay:today,days=[],i;
+  for(i=0;i<7;i++)days.push(addDays(today,i));
+  var work=workForDay(kidId,date,today),res=buildDay(r,date,work),rows=[];
+  res.fixed.forEach(function(f){rows.push({s:f.s,h:'<div class="ttrow fixed"><span class="ttime">'+fromMin(f.s)+'–'+fromMin(f.e)+'</span><div class="ttitle">'+esc(f.label)+'</div></div>'})});
+  res.free.forEach(function(f){rows.push({s:f.s,h:'<div class="ttrow free"><span class="ttime">'+fromMin(f.s)+'–'+fromMin(f.e)+'</span><div class="ttitle">Free time · '+fmtMin(f.e-f.s)+'</div></div>'})});
+  res.blocks.forEach(function(b){
+    rows.push({s:b.s,h:'<div class="ttrow block'+(b.clash?' clash':'')+'"><span class="ttime">'+fromMin(b.s)+'–'+fromMin(b.e)+'</span><div><div class="ttitle">'+esc(b.subject)+(b.parts>1?' ('+b.part+' of '+b.parts+')':'')+'<span class="tag">'+(b.kind==='study'?'Study':'Homework')+'</span></div>'+
+      '<div class="sub">'+fmtMin(b.min)+' · today\'s target '+b.q+(b.q===1?' question':' questions')+(b.manual?' · your time':'')+(b.clash?' · overlaps something else':'')+'</div>'+
+      (canEdit?'<input type="time" class="tt-start" id="ts-'+esc(b.key)+'" data-key="'+esc(b.key)+'" data-date="'+date+'" data-kid="'+esc(kidId)+'" value="'+fromMin(b.s)+'" aria-label="Start time for '+esc(b.subject)+'">':'')+'</div></div>'});
+  });
+  rows.sort(function(a,b){return a.s-b.s});
+  var need=work.reduce(function(t,w){return t+w.min},0),edited=r.edits&&r.edits[date]&&Object.keys(r.edits[date]).length;
+  var h='<div class="upd-head"><h2>Time table</h2><p class="sub">'+esc(fmt(date,{weekday:'long',day:'numeric',month:'long'}))+'</p></div>'+
+    '<div class="dates" style="padding:12px 16px">'+days.map(function(d){return '<button type="button" class="dchip sm" data-act="ttday" data-d="'+d+'" aria-pressed="'+(d===date)+'">'+esc(fmt(d,{weekday:'short',day:'numeric'}))+(d===today?' · today':'')+'</button>'}).join('')+'</div>'+
+    '<div class="prow"><div>Study and homework planned: <b>'+fmtMin(need)+'</b> · free time around your day: <b>'+fmtMin(res.freeMin)+'</b></div>'+
+    (res.over.length?'<div class="note">'+fmtMin(res.over.reduce(function(t,w){return t+w.min},0))+' does not fit into the free time on this day ('+esc(res.over.map(function(w){return w.subject}).filter(function(v,i,a){return a.indexOf(v)===i}).join(', '))+'). Change the working days for those tasks, or move bedtime later under My day.</div>':'')+
+    (canEdit&&edited?'<div class="tact"><button class="btn small" data-act="ttreset" data-d="'+date+'">Put this day back to automatic</button></div>':'')+'</div>'+
+    (rows.length?rows.map(function(x){return x.h}).join(''):'<div class="empty">Nothing planned for this day.</div>')+
+    (canEdit?'<div class="prow"><div class="sub">Change a start time with the box under a task. Other tasks move around it.</div></div>':'');
+  $('#tt-day').innerHTML=h;
+}
+function timeField(id,label,v){return '<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" type="time" value="'+esc(v)+'"></div>'}
+function numField(id,label,v,mx){return '<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" type="number" inputmode="numeric" min="0" max="'+mx+'" value="'+esc(v)+'"></div>'}
+function dowChips(sel,attr){return DOWS.map(function(d){return '<button type="button" class="dchip sm" '+attr+'="'+d[0]+'" aria-pressed="'+(sel.indexOf(d[0])>-1)+'">'+d[1]+'</button>'}).join('')}
+function renderTTSet(isNew){
+  var d=ttDraft,open=ttOpen===null?isNew:ttOpen;
+  var tu=d.tuition.map(function(t,i){
+    return '<div class="tdrow"><div class="field"><label for="tu-l-'+i+'">Tuition or class name</label><input id="tu-l-'+i+'" type="text" maxlength="40" value="'+esc(t.label)+'"></div>'+
+      '<div class="dates" style="grid-template-columns:repeat(auto-fill,minmax(64px,1fr))">'+dowChips(t.days,'data-ttud="'+i+'" data-dow')+'</div>'+
+      '<div class="two">'+timeField('tu-s-'+i,'Starts',t.start)+timeField('tu-e-'+i,'Ends',t.end)+'</div>'+
+      '<div class="tact"><button class="btn small" type="button" data-act="turm" data-i="'+i+'">Remove</button></div></div>';
+  }).join('');
+  $('#tt-set').innerHTML='<details class="ttset" id="tt-det"'+(open?' open':'')+'><summary>My day: school, travel and tuition</summary><form data-form="routine">'+
+    '<div class="two">'+timeField('rt-wake','Wake up',d.wake)+timeField('rt-sleep','Bedtime',d.sleep)+'</div>'+
+    '<div class="field"><span class="lbl">School days</span><div class="dates" style="grid-template-columns:repeat(auto-fill,minmax(64px,1fr))">'+dowChips(d.schoolDays,'data-ttsd')+'</div></div>'+
+    '<div class="two">'+timeField('rt-ss','School starts',d.schoolStart)+timeField('rt-se','School ends',d.schoolEnd)+'</div>'+
+    '<div class="two">'+numField('rt-to','Travel to school (minutes)',d.travelTo,240)+numField('rt-back','Travel back home (minutes)',d.travelBack,240)+'</div>'+
+    '<div class="two">'+numField('rt-rest','Rest after reaching home (minutes)',d.rest,240)+numField('rt-gap','Break between study blocks (minutes)',d.gap,60)+'</div>'+
+    '<h3>Tuition</h3>'+(tu||'<p class="sub">No tuition added.</p>')+
+    '<div class="tact"><button class="btn small" type="button" data-act="tuadd">Add tuition</button></div>'+
+    '<h3>Estimates</h3><div class="two">'+numField('rt-pq','Minutes per question',d.perQ,120)+
+    '<div class="field"><span class="lbl">Use my own average</span><label class="pgrid" style="min-height:44px;align-items:center"><input type="checkbox" id="rt-avg" style="width:auto;min-height:0"'+(d.useAvg?' checked':'')+'>once I have 5 timed questions</label></div></div>'+
+    '<p class="err" id="rt-err" role="alert" hidden></p><div class="formact"><button class="btn primary" type="submit">Save my day</button></div></form></details>';
+}
+function syncDraft(){
+  var d=ttDraft,v=function(id){var e=document.getElementById(id);return e?e.value:null};
+  if(!d||!document.getElementById('rt-wake'))return;
+  d.wake=v('rt-wake');d.sleep=v('rt-sleep');d.schoolStart=v('rt-ss');d.schoolEnd=v('rt-se');
+  d.travelTo=v('rt-to');d.travelBack=v('rt-back');d.rest=v('rt-rest');d.gap=v('rt-gap');d.perQ=v('rt-pq');d.useAvg=document.getElementById('rt-avg').checked;
+  d.tuition.forEach(function(t,i){t.label=v('tu-l-'+i);t.start=v('tu-s-'+i);t.end=v('tu-e-'+i)});
+}
+function saveRoutine(){
+  if(!ttDraft||!ttKid)return;
+  syncDraft();
+  var cur=routineOf(ttKid),d=ttDraft,err=document.getElementById('rt-err'),msg='';
+  if(toMin(d.wake)===null||toMin(d.sleep)===null||toMin(d.wake)>=toMin(d.sleep))msg='Bedtime must be after wake-up time.';
+  else if(d.schoolDays.length&&(toMin(d.schoolStart)===null||toMin(d.schoolEnd)===null||toMin(d.schoolEnd)<=toMin(d.schoolStart)))msg='School must end after it starts.';
+  else if(d.tuition.some(function(t){return !t.days.length||toMin(t.start)===null||toMin(t.end)===null||toMin(t.end)<=toMin(t.start)}))msg='Each tuition needs at least one day, and must end after it starts.';
+  else if(!(Number(d.perQ)>=1))msg='Minutes per question must be at least 1.';
+  if(msg){err.textContent=msg;err.hidden=false;return}
+  var out=cleanRoutine(Object.assign({},d,{edits:cur?cur.edits:{}}));
+  out.pid=ttKid;out.updated=Date.now();
+  ttDirty=false;ttSetKey='';
+  fs.doc('routines/'+ttKid).set(out).then(function(){toast('Saved.')}).catch(writeFail);
+}
+function writeEdit(kidId,date,key,val){
+  var r=cleanRoutine(routineOf(kidId)||defRoutine()),today=ymd(new Date());
+  if(!r.edits[date])r.edits[date]={};
+  if(val)r.edits[date][key]=val;else delete r.edits[date][key];
+  if(!Object.keys(r.edits[date]).length)delete r.edits[date];
+  Object.keys(r.edits).forEach(function(k){if(k<today)delete r.edits[k]});
+  r.pid=kidId;r.updated=Date.now();
+  fs.doc('routines/'+kidId).set(r).catch(writeFail);
+}
+function renderTT(kl,c,today){
+  var m=me(),kids=kl.filter(function(k){return k.id!=='unassigned'}),kidId=c!=='all'?c:(kids.length===1?kids[0].id:null),ok=!!kidId&&isStudent(kidId);
+  $('#tt-pick').hidden=ok;
+  ['#tt-speed','#tt-day','#tt-set'].forEach(function(q){$(q).hidden=!ok});
+  if(!ok)return;
+  if(kidId!==ttKid){ttKid=kidId;ttDirty=false;ttSetKey='';ttOpen=null;ttDraft=null}
+  var r=routineOf(kidId)||defRoutine(),canEdit=m.role!=='classteacher';
+  renderSpeed(kidId,r);renderTTDay(kidId,today,r,canEdit);
+  if(!canEdit){$('#tt-set').hidden=true;return}
+  var key=kidId+'|'+JSON.stringify(routines.get(kidId)||null);
+  if(key!==ttSetKey&&!ttDirty){ttDraft=JSON.parse(JSON.stringify(r));ttSetKey=key;renderTTSet(!routines.has(kidId))}
+}
 function renderMain(today){
   var m=me(),kl=kidList(),c=curKid(),list=visibleItems(),overview=c==='all'&&kl.length>=2;
   renderKids(kl,c);
+  document.querySelectorAll('#tabs [data-tab]').forEach(function(x){x.setAttribute('aria-pressed',String(x.dataset.tab===tab))});
+  $('#tt').hidden=tab!=='tt';$('#work').hidden=tab==='tt';
+  if(tab==='tt'){
+    ['#overview','#today','#week','#updates','#duebox'].forEach(function(q){$(q).hidden=true});
+    renderTT(kl,c,today);renderPeople();return;
+  }
   $('#overview').hidden=!overview;if(overview)renderOverview(kl,list,today);
   $('#today').hidden=overview||!kl.length;if(!$('#today').hidden)renderToday(list,today);
   renderWeek(list,today,overview?'Workload, all kids':'Workload this week');
@@ -988,7 +1237,10 @@ document.addEventListener('click',function(e){
   var kb=e.target.closest('[data-kid]');
   if(kb){kid=kb.dataset.kid;planning=null;render();return}
   var tb=e.target.closest('[data-tab]');
-  if(tb){tab=tb.dataset.tab;planning=null;form.hidden=true;confirmId=null;render();return}
+  if(tb){tab=tb.dataset.tab;planning=null;form.hidden=true;confirmId=null;ttDay=null;render();return}
+  var sdb=e.target.closest('[data-ttsd]'),tdb=e.target.closest('[data-ttud]');
+  if(sdb&&ttDraft){syncDraft();var dw=Number(sdb.dataset.ttsd),ix=ttDraft.schoolDays.indexOf(dw);if(ix>-1)ttDraft.schoolDays.splice(ix,1);else ttDraft.schoolDays.push(dw);ttDirty=true;ttOpen=true;renderTTSet(false);return}
+  if(tdb&&ttDraft){syncDraft();var tu=ttDraft.tuition[Number(tdb.dataset.ttud)],dw2=Number(tdb.dataset.dow);if(tu){var ix2=tu.days.indexOf(dw2);if(ix2>-1)tu.days.splice(ix2,1);else tu.days.push(dw2)}ttDirty=true;ttOpen=true;renderTTSet(false);return}
   var pd=e.target.closest('[data-pd]');
   if(pd&&planning){var d=pd.dataset.pd;if(planning.set.has(d))planning.set.delete(d);else planning.set.add(d);render();return}
   var b=e.target.closest('[data-act]');if(!b)return;
@@ -1004,11 +1256,12 @@ document.addEventListener('click',function(e){
   if(act==='cls')return toggleClass(pid,b.dataset.sid);
   if(act==='gm')return toggleMember(b.dataset.g,b.dataset.sid);
   if(act==='gdel'){var gid=b.dataset.g;if(confirmId!=='g:'+gid){confirmId='g:'+gid;render();return}confirmId=null;fs.doc('groups/'+gid).delete().catch(writeFail);return}
-  if(act==='all')return setDone(id,today,Number(b.dataset.n));
+  if(act==='all'){var mv0=readMins(id);if(mv0===false)return;return setDone(id,today,Number(b.dataset.n),mv0)}
   if(act==='log'){
     var v=document.getElementById(b.dataset.src).value.trim();
     if(!/^\d{1,4}$/.test(v))return toast('Enter a whole number, like 12.');
-    return setDone(id,today,Number(v));
+    var mv1=readMins(id);if(mv1===false)return;
+    return setDone(id,today,Number(v),mv1);
   }
   if(act==='dueb'||act==='dueset'){
     var dl=b.dataset.bk!==undefined?dueBatches(today).filter(function(x){return x.key===b.dataset.bk}).reduce(function(r,x){return r.concat(x.list)},[]):[items.get(id)].filter(Boolean);
@@ -1017,6 +1270,10 @@ document.addEventListener('click',function(e){
     if(!DATE_RE.test(dv)){toast('Pick a date first.');return}
     return changeDue(dl,function(){return dv});
   }
+  if(act==='ttday'){ttDay=b.dataset.d;render();return}
+  if(act==='ttreset'){var kk0=ttKid;if(kk0){var rr=cleanRoutine(routineOf(kk0)||defRoutine());delete rr.edits[b.dataset.d];rr.pid=kk0;rr.updated=Date.now();fs.doc('routines/'+kk0).set(rr).catch(writeFail)}return}
+  if(act==='tuadd'){syncDraft();ttDraft.tuition.push({label:'Tuition',days:[],start:'17:00',end:'18:00'});ttDirty=true;ttOpen=true;renderTTSet(false);return}
+  if(act==='turm'){syncDraft();ttDraft.tuition.splice(Number(b.dataset.i),1);ttDirty=true;ttOpen=true;renderTTSet(false);return}
   if(act==='unit')return tickUnit(id,Number(b.dataset.i),today);
   if(act==='plan'){var a0=items.get(id);if(a0){planning={id:id,set:new Set(a0.dates.filter(function(x){return x>=today}))};if(!$('#list').contains(b))toast('Choose the days in the card below.');render()}return}
   if(act==='cancelplan'){planning=null;render();return}
@@ -1034,13 +1291,16 @@ document.addEventListener('click',function(e){
   if(act==='cancel'){confirmId=null;render()}
 });
 document.addEventListener('toggle',function(e){
-  var d=e.target;if(!d.classList||!d.classList.contains('qgrid'))return;
+  var d=e.target;if(d.id==='tt-det'){ttOpen=d.open;return}
+  if(!d.classList||!d.classList.contains('qgrid'))return;
   if(d.open)openGrids.add(d.dataset.g);else openGrids.delete(d.dataset.g);
 },true);
 document.addEventListener('change',function(e){
-  var t=e.target;if(!t.classList||!t.classList.contains('plog'))return;
+  var t=e.target;
+  if(t.classList&&t.classList.contains('tt-start')){writeEdit(t.dataset.kid,t.dataset.date,t.dataset.key,toMin(t.value)!==null?t.value:'');return}
+  if(!t.classList||!t.classList.contains('plog'))return;
   var id=t.dataset.id,date=t.dataset.date,v=t.value.trim();
-  if(v==='')return mutate(id,function(a){return Object.assign({},a,unlogDate(a,date))});
+  if(v==='')return mutate(id,function(a){var mm=Object.assign({},a.mins);delete mm[date];return Object.assign({},a,unlogDate(a,date),{mins:mm})});
   if(!/^\d{1,4}$/.test(v)){toast('Enter a whole number, like 12.');render();return}
   setDone(id,date,Number(v));
 });
@@ -1048,6 +1308,7 @@ document.addEventListener('submit',function(e){
   var f=e.target.closest('[data-form]');if(!f)return;
   e.preventDefault();
   var kind=f.dataset.form,inp=f.querySelector('input'),val=inp?inp.value.trim():'';
+  if(kind==='routine'){saveRoutine();return}
   if(kind==='login'){
     var norm=normCode(val);
     if(norm.length<8){loginErr='Enter your full ID.';render();return}
@@ -1113,7 +1374,7 @@ function updatePreview(){
   var v=readForm(),pv=$('#f-preview'),today=ymd(new Date());
   if(me()&&!isStaff(me().role)&&v.total>=1&&v.dates.length){
     var p=planFor({total:v.total,dates:v.dates,due:v.due||'9999-12-31',done:{}},today);
-    var chips=p.rows.slice(0,8).map(function(r){return '<span class="chip">'+esc(fmt(r.date))+' <i>'+r.target+'</i></span>'}).join('');
+    var kk=kidForForm(),pq=perQcalc(routineOf(kk),kidItems(kk),v.subject),chips=p.rows.slice(0,8).map(function(r){return '<span class="chip">'+esc(fmt(r.date))+' <i>'+r.target+' · '+fmtMin(r.target*pq)+'</i></span>'}).join('');
     var more=p.rows.length>8?'<span class="chip">+'+(p.rows.length-8)+' more days</span>':'';
     pv.innerHTML='<b>Daily split</b><div class="chips">'+chips+more+'</div>';pv.hidden=false;
   }else pv.hidden=true;
@@ -1242,6 +1503,7 @@ form.addEventListener('submit',function(e){
   form.reset();picked.clear();fParts=null;buildPartsGrid();assignSel.clear();form.hidden=true;
   toast(tab==='study'&&!isT?'Subject added.':isT?(tab==='study'?'Study plan assigned to ':'Assigned to ')+targets.length+' student'+(targets.length===1?'':'s')+'.':'Plan created.');render();
 });
+document.addEventListener('input',function(e){if(e.target.closest&&e.target.closest('#tt-set'))ttDirty=true});
 document.addEventListener('visibilitychange',function(){if(!document.hidden)render()});
 
 /* ---------- start ---------- */
