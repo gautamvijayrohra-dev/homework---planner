@@ -307,7 +307,7 @@ details.ttset summary{cursor:pointer;font:800 1.15rem var(--font-display);paddin
    ===================================================================== */
 window.FIREBASE_CONFIG = {
   apiKey: "AIzaSyCx0NSFAbL3UhJ1tF8s8QZ3JKi3NOPoCS4",
-  authDomain: "homework-planner-1d97e.firebaseapp.com",
+  authDomain: "homework-planner-1d97e_ID.firebaseapp.com",
   projectId: "homework-planner-1d97e",
   appId: "1:971620540421:web:bc57383106a17ccc323c6c"
 };
@@ -440,7 +440,18 @@ function buildDay(r,date,work){
       var sl=slots[i];
       if(sl.e-sl.s>=w.min){placed.push(Object.assign({},w,{s:sl.s,e:sl.s+w.min}));sl.s+=w.min+(r.gap||0);return}
     }
-    over.push(w);
+    // no single gap is long enough: split it over the longest gaps, pieces of at least 10 minutes
+    var left=w.min,mine=[];
+    while(left>0){
+      var bi=-1,bl=0;
+      slots.forEach(function(sl,k){var len=sl.e-sl.s;if(len>bl){bl=len;bi=k}});
+      if(bi<0||bl<10)break;
+      var sl2=slots[bi],piece=Math.min(left,bl);
+      mine.push(Object.assign({},w,{s:sl2.s,e:sl2.s+piece,min:piece,total:w.min}));
+      sl2.s+=piece+(r.gap||0);left-=piece;
+    }
+    mine.sort(function(a,b){return a.s-b.s}).forEach(function(p,k){p.part=k+1;p.parts=mine.length;p.key=k?w.key+'#'+k:w.key;placed.push(p)});
+    if(left>0)over.push(Object.assign({},w,{min:left}));
   });
   var blocks=placed.concat(manual).sort(function(a,b){return a.s-b.s});
   function hit(a,b){return a.s<b.e&&b.s<a.e}
@@ -1187,15 +1198,15 @@ function renderPeople(){
 /* ---------- Time Table ---------- */
 var ttDay=null,ttDraft=null,ttSetKey='',ttDirty=false,ttKid=null,ttOpen=null;
 var DOWS=[[1,'Mon'],[2,'Tue'],[3,'Wed'],[4,'Thu'],[5,'Fri'],[6,'Sat'],[0,'Sun']];
-// The study blocks for one day: every homework and study plan with something planned that day, split into sessions of at most 45 minutes.
+// The study blocks for one day: every homework and study plan with something planned that day. Each block is questions x minutes per question (10 questions at 5 min = 50 min).
 function workForDay(kidId,date,today){
   var list=kidItems(kidId),r=routineOf(kidId)||defRoutine(),w=[];
   list.sort(function(x,y){return (x.kind==='study')-(y.kind==='study')||x.due.localeCompare(y.due)||x.subject.localeCompare(y.subject)});
   list.forEach(function(a){
     var row=planFor(a,today).rows.find(function(x){return x.date===date});
     if(!row||!row.target||(row.state!=='today'&&row.state!=='upcoming'))return;
-    var pq=perQcalc(r,list,a.subject),M=Math.max(5,Math.round(row.target*pq/5)*5),n=Math.ceil(M/45),size=Math.ceil(M/n),left=M;
-    for(var k=0;k<n;k++){var mm=Math.min(size,left);left-=mm;w.push({key:a.id+'~'+k,aid:a.id,subject:a.subject,kind:a.kind,min:mm,part:k+1,parts:n,q:row.target})}
+    var pq=perQcalc(r,list,a.subject),M=Math.max(1,Math.round(row.target*pq));
+    w.push({key:a.id+'~0',aid:a.id,subject:a.subject,kind:a.kind,min:M,total:M,part:1,parts:1,q:row.target,pq:pq});
   });
   return w;
 }
@@ -1218,16 +1229,17 @@ function renderTTDay(kidId,today,r,canEdit){
   });
   res.free.forEach(function(f){rows.push({s:f.s,h:'<div class="ttrow free"><span class="ttime">'+fromMin(f.s)+'–'+fromMin(f.e)+'</span><div class="ttitle">Free time · '+fmtMin(f.e-f.s)+'</div></div>'})});
   res.blocks.forEach(function(b){
-    rows.push({s:b.s,h:'<div class="ttrow block'+(b.clash?' clash':'')+'"><span class="ttime">'+fromMin(b.s)+'–'+fromMin(b.e)+'</span><div><div class="ttitle">'+esc(b.subject)+(b.parts>1?' ('+b.part+' of '+b.parts+')':'')+'<span class="tag">'+(b.kind==='study'?'Study':'Homework')+'</span></div>'+
-      '<div class="sub">'+fmtMin(b.min)+' · today\'s target '+b.q+(b.q===1?' question':' questions')+(b.manual?' · your time':'')+(b.clash?' · overlaps something else':'')+'</div>'+
+    rows.push({s:b.s,h:'<div class="ttrow block'+(b.clash?' clash':'')+'"><span class="ttime">'+fromMin(b.s)+'–'+fromMin(b.e)+'</span><div><div class="ttitle">'+esc(b.subject)+(b.parts>1?' (part '+b.part+' of '+b.parts+')':'')+'<span class="tag">'+(b.kind==='study'?'Study':'Homework')+'</span></div>'+
+      '<div class="sub">'+b.q+(b.q===1?' question':' questions')+' × '+(+(b.pq||0).toFixed(1))+' min = '+fmtMin(b.total||b.min)+(b.parts>1?' · this part '+fmtMin(b.min):'')+(b.manual?' · your time':'')+(b.clash?' · overlaps something else':'')+'</div>'+
       (canEdit?'<input type="time" class="tt-start" id="ts-'+esc(b.key)+'" data-key="'+esc(b.key)+'" data-date="'+date+'" data-kid="'+esc(kidId)+'" value="'+fromMin(b.s)+'" aria-label="Start time for '+esc(b.subject)+'">':'')+'</div></div>'});
   });
   rows.sort(function(a,b){return a.s-b.s});
-  var need=work.reduce(function(t,w){return t+w.min},0),edited=r.edits&&r.edits[date]&&Object.keys(r.edits[date]).length;
+  var up=kidItems(kidId).filter(function(a){var p=planFor(a,today);return p.unplanned&&!p.complete}),need=work.reduce(function(t,w){return t+w.min},0),edited=r.edits&&r.edits[date]&&Object.keys(r.edits[date]).length;
   var h='<div class="upd-head"><h2>Time table</h2><p class="sub">'+esc(fmt(date,{weekday:'long',day:'numeric',month:'long'}))+'</p></div>'+
     '<div class="dates" style="padding:12px 16px">'+days.map(function(d){return '<button type="button" class="dchip sm" data-act="ttday" data-d="'+d+'" aria-pressed="'+(d===date)+'">'+esc(fmt(d,{weekday:'short',day:'numeric'}))+(d===today?' · today':'')+'</button>'}).join('')+'</div>'+
     '<div class="prow"><div>Study and homework planned: <b>'+fmtMin(need)+'</b> · free time around your day: <b>'+fmtMin(res.freeMin)+'</b></div>'+
     (res.over.length?'<div class="note">'+fmtMin(res.over.reduce(function(t,w){return t+w.min},0))+' does not fit into the free time on this day ('+esc(res.over.map(function(w){return w.subject}).filter(function(v,i,a){return a.indexOf(v)===i}).join(', '))+'). Change the working days for those tasks, or move bedtime later under My day.</div>':'')+
+    (up.length?'<div class="note">Not in the time table yet, because no working days are chosen: '+esc(up.map(function(a){return a.subject+' ('+a.total+(a.total===1?' question':' questions')+', about '+fmtMin(estMin(a,a.total))+')'}).join(', '))+'. Choose days on the task and it will appear.</div>':'')+
     (canEdit&&edited?'<div class="tact"><button class="btn small" data-act="ttreset" data-d="'+date+'">Put this day back to automatic</button></div>':'')+'</div>'+
     (rows.length?rows.map(function(x){return x.h}).join(''):'<div class="empty">Nothing planned for this day.</div>')+
     (canEdit?'<div class="prow"><div class="sub">Change a start time with the box under a task. Other tasks move around it.</div></div>':'');
