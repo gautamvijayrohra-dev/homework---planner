@@ -307,7 +307,7 @@ details.ttset summary{cursor:pointer;font:800 1.15rem var(--font-display);paddin
    ===================================================================== */
 window.FIREBASE_CONFIG = {
   apiKey: "AIzaSyCx0NSFAbL3UhJ1tF8s8QZ3JKi3NOPoCS4",
-  authDomain: "homework-planner-1d97e_ID.firebaseapp.com",
+  authDomain: "homework-planner-1d97e.firebaseapp.com",
   projectId: "homework-planner-1d97e",
   appId: "1:971620540421:web:bc57383106a17ccc323c6c"
 };
@@ -325,20 +325,30 @@ function diffDays(a,b){return Math.round((parse(b)-parse(a))/86400000)}
 // a.dates is the list of days the student chose to work on this subject.
 // What is left is split evenly over every chosen day that is today or later and not yet logged.
 // A day you logged keeps what you did. A chosen past day with nothing logged counts as missed (0 done).
+// A day can be pinned (a.caps[date] = how many questions that day). Pinned days keep exactly that; the rest is spread evenly over the other open days.
+function splitWithCaps(dates,remaining,caps){
+  var t={},free=[],rem=remaining;
+  dates.forEach(function(d){
+    if(caps&&caps[d]!==undefined){var v=Math.min(caps[d],rem);t[d]=v;rem-=v}else free.push(d);
+  });
+  var base=free.length?Math.floor(rem/free.length):0,extra=free.length?rem%free.length:0;
+  free.forEach(function(d,i){t[d]=base+(i<extra?1:0)});
+  return t;
+}
 function planFor(a,today){
   var dates=a.dates||[],done=a.done||{},doneTotal=0;
   for(var k in done)doneTotal+=Number(done[k])||0;
   var remaining=Math.max(0,a.total-doneTotal);
-  var open=dates.filter(function(d){return done[d]===undefined&&d>=today}).length;
-  var base=open?Math.floor(remaining/open):0,extra=open?remaining%open:0,idx=0;
+  var openDates=dates.filter(function(d){return done[d]===undefined&&d>=today}),open=openDates.length;
+  var tg=splitWithCaps(openDates,remaining,a.caps),alloc=0;
+  openDates.forEach(function(d){alloc+=tg[d]});
   var rows=dates.map(function(d){
     if(done[d]!==undefined)return{date:d,state:'logged',done:Number(done[d]),target:null};
     if(d<today)return{date:d,state:'missed',done:0,target:null};
-    var t=base+(idx<extra?1:0);idx++;
-    return{date:d,state:d===today?'today':'upcoming',target:t,done:null};
+    return{date:d,state:d===today?'today':'upcoming',target:tg[d],done:null};
   });
   return{rows:rows,remaining:remaining,doneTotal:doneTotal,openDays:open,
-    complete:remaining===0,unplanned:dates.length===0,behind:remaining>0&&open===0&&dates.length>0,
+    complete:remaining===0,unplanned:dates.length===0,behind:remaining>0&&(open===0||alloc<remaining)&&dates.length>0,
     missed:rows.some(function(r){return r.state==='missed'}),
     pastDue:dates.length>0&&dates[dates.length-1]>a.due};
 }
@@ -373,7 +383,7 @@ function fromMin(x){x=Math.max(0,Math.min(1439,Math.round(x)));return String(Mat
 function fmtMin(m){m=Math.round(m);if(m<60)return m+' min';var h=Math.floor(m/60),r=m%60;return h+' h'+(r?' '+r+' min':'')}
 function defRoutine(){
   var w={};for(var d=0;d<7;d++)w[d]=(d===0||d===6)?{wake:'08:00',sleep:'22:00'}:{wake:'06:30',sleep:'21:30'};
-  return{wake:'06:30',sleep:'21:30',week:w,schoolDays:[1,2,3,4,5],schoolStart:'08:00',schoolEnd:'15:00',travelTo:30,travelBack:30,rest:30,gap:10,perQ:5,useAvg:false,tuition:[],custom:[],edits:{}};
+  return{wake:'06:30',sleep:'21:30',week:w,schoolDays:[1,2,3,4,5],schoolStart:'08:00',schoolEnd:'15:00',travelTo:30,travelBack:30,rest:30,gap:10,perQ:5,useAvg:false,tuition:[],custom:[],edits:{},caps:{},stretch:{}};
 }
 // wake-up and bedtime for one weekday (0 = Sunday); older saved routines have one pair for every day
 function dayTimes(r,dow){
@@ -453,10 +463,33 @@ function buildDay(r,date,work){
     mine.sort(function(a,b){return a.s-b.s}).forEach(function(p,k){p.part=k+1;p.parts=mine.length;p.key=k?w.key+'#'+k:w.key;placed.push(p)});
     if(left>0)over.push(Object.assign({},w,{min:left}));
   });
+  // the student chose to stretch past bedtime for a task: what is left goes right after bedtime
+  var stt=(r.stretch&&r.stretch[date])||{},cursor=sleep;
+  over.forEach(function(w){
+    if(!stt[w.aid])return;
+    var room=1439-cursor;if(room<5)return;
+    var piece=Math.min(w.min,room);
+    placed.push(Object.assign({},w,{s:cursor,e:cursor+piece,min:piece,stretch:true,key:w.key+'#s'}));
+    cursor+=piece+(r.gap||0);w.min-=piece;
+  });
+  over=over.filter(function(w){return w.min>0});
   var blocks=placed.concat(manual).sort(function(a,b){return a.s-b.s});
+  // how many questions fit in each slot, and what is still pending after it
+  var byAid={},pending=[],seen={};
+  blocks.forEach(function(b){(byAid[b.aid]=byAid[b.aid]||[]).push(b)});
+  work.forEach(function(w){
+    if(seen[w.aid])return;seen[w.aid]=1;
+    var bl=byAid[w.aid]||[],cum=0,dn=0;
+    bl.forEach(function(b,i){
+      b.part=i+1;b.parts=bl.length;cum+=b.min;
+      var nd=cum>=w.total?w.q:Math.min(w.q,Math.floor(cum/w.pq+1e-6));
+      b.doQ=nd-dn;b.pendAfter=w.q-nd;dn=nd;
+    });
+    if(dn<w.q)pending.push({aid:w.aid,subject:w.subject,kind:w.kind,q:w.q,pq:w.pq,pendQ:w.q-dn,pendMin:Math.max(1,Math.round((w.q-dn)*w.pq)),done:dn});
+  });
   function hit(a,b){return a.s<b.e&&b.s<a.e}
   blocks.forEach(function(b){b.clash=fixed.some(function(f){return hit(f,b)})||blocks.some(function(o){return o!==b&&hit(o,b)})});
-  return{fixed:fixed,blocks:blocks,over:over,free:slots.filter(function(x){return x.e-x.s>=20}),freeMin:freeMin};
+  return{fixed:fixed,blocks:blocks,over:over,pending:pending,free:slots.filter(function(x){return x.e-x.s>=20}),freeMin:freeMin};
 }
 // Plain-language remarks on the last 7 days, worked out from the plan, the minutes written down and the Time Spent diary.
 // These are fixed rules, not a live AI. summary is a short text the student can paste into an AI chat to get more.
@@ -594,6 +627,18 @@ function cleanRoutine(x){
   r.custom=Array.isArray(x.custom)?x.custom.slice(0,60).filter(function(c){return c&&toMin(c.start)!==null&&toMin(c.end)!==null&&toMin(c.end)>toMin(c.start)}).map(function(c){
     return{id:String(c.id||newId('c')).slice(0,30),name:String(c.name||'My task').slice(0,40),start:c.start,end:c.end,date:DATE_RE.test(String(c.date||''))?c.date:'',dow:(Number.isInteger(c.dow)&&c.dow>=0&&c.dow<=6)?c.dow:null};
   }):[];
+  r.caps={};
+  if(x.caps&&typeof x.caps==='object')for(var ca in x.caps){
+    var cm=x.caps[ca];if(!cm||typeof cm!=='object')continue;
+    var o2={};for(var cd in cm){var cn=Number(cm[cd]);if(DATE_RE.test(cd)&&Number.isFinite(cn)&&cn>=0)o2[cd]=Math.min(1000,Math.floor(cn))}
+    if(Object.keys(o2).length)r.caps[String(ca).slice(0,40)]=o2;
+  }
+  r.stretch={};
+  if(x.stretch&&typeof x.stretch==='object')for(var sd in x.stretch){
+    if(!DATE_RE.test(sd)||!x.stretch[sd]||typeof x.stretch[sd]!=='object')continue;
+    var o3={};for(var sa in x.stretch[sd])if(x.stretch[sd][sa])o3[String(sa).slice(0,40)]=true;
+    if(Object.keys(o3).length)r.stretch[sd]=o3;
+  }
   r.tuition=Array.isArray(x.tuition)?x.tuition.slice(0,10).map(function(u){u=u||{};return{label:String(u.label||'Tuition').slice(0,40),days:days(u.days),start:t(u.start,'17:00'),end:t(u.end,'18:00')}}):[];
   if(x.edits&&typeof x.edits==='object')for(var dt in x.edits){
     if(!DATE_RE.test(dt)||!x.edits[dt]||typeof x.edits[dt]!=='object')continue;
@@ -654,7 +699,8 @@ function visibleItems(){
 }
 
 /* ---------- data: live subscriptions, filtered on the server by the rules ---------- */
-function rebuildItems(){items=new Map();Object.keys(itemSrc).forEach(function(k){itemSrc[k].forEach(function(a){items.set(a.id,a)})})}
+function applyCaps(){items.forEach(function(a){var r=routines.get(a.studentId);a.caps=(r&&r.caps&&r.caps[a.id])||null})}
+function rebuildItems(){items=new Map();Object.keys(itemSrc).forEach(function(k){itemSrc[k].forEach(function(a){items.set(a.id,a)})});applyCaps()}
 function rebuildUpd(){var all=[];Object.keys(updSrc).forEach(function(k){all=all.concat(updSrc[k])});updates=all.sort(function(a,b){return(Number(b.at)||0)-(Number(a.at)||0)}).slice(0,60)}
 function rebuildPeople(){people=new Map();Object.keys(peopleSrc).forEach(function(k){peopleSrc[k].forEach(function(p){people.set(p.pid,p)})})}
 function onItems(k){return function(s){itemSrc[k]=s.docs.map(function(d){return clean(d.id,d.data())}).filter(Boolean);rebuildItems();render()}}
@@ -670,8 +716,8 @@ function cleanLog(id,d){
 }
 function rebuildTL(){tlogs=new Map();Object.keys(tlSrc).forEach(function(k){tlSrc[k].forEach(function(l){tlogs.set(l.studentId+'|'+l.date,l)})})}
 function onLogs(k){return function(s){tlSrc[k]=s.docs.map(function(d){return cleanLog(d.id,d.data())}).filter(Boolean);rebuildTL();render()}}
-function onRoutine(pid){return function(d){if(d.exists)routines.set(pid,cleanRoutine(d.data()));else routines.delete(pid);render()}}
-function onRoutines(s){routines=new Map();s.docs.forEach(function(d){routines.set(d.id,cleanRoutine(d.data()))});render()}
+function onRoutine(pid){return function(d){if(d.exists)routines.set(pid,cleanRoutine(d.data()));else routines.delete(pid);applyCaps();render()}}
+function onRoutines(s){routines=new Map();s.docs.forEach(function(d){routines.set(d.id,cleanRoutine(d.data()))});applyCaps();render()}
 function onGroups(s){groups=new Map();s.docs.forEach(function(d){groups.set(d.id,groupFrom(d))});render()}
 function onPerson(k){return function(d){peopleSrc[k]=d.exists?[personFrom(d)]:[];rebuildPeople();if(k==='self')syncKids();render()}}
 function sub(key,ref,fn){
@@ -860,7 +906,7 @@ function toggleMember(gid,sid){
 }
 
 /* ---------- homework writes ---------- */
-function save(a){var d=Object.assign({},a);delete d.id;if(d.mins&&!Object.keys(d.mins).length)delete d.mins;fs.doc('assignments/'+a.id).set(d).catch(writeFail)}
+function save(a){var d=Object.assign({},a);delete d.id;delete d.caps;if(d.mins&&!Object.keys(d.mins).length)delete d.mins;fs.doc('assignments/'+a.id).set(d).catch(writeFail)}
 function mutate(id,fn){var a=items.get(id);if(!a)return;save(fn(a))}
 function pushUpdate(u){var id=u.id,body=Object.assign({},u,{at:Date.now()});delete body.id;fs.doc('updates/'+id).set(body).catch(function(){})}
 function logUpdate(a,date,n){pushUpdate({id:a.id+'_'+date,aid:a.id,studentId:a.studentId,subject:a.subject,type:'log',date:date,n:n,total:a.total})}
@@ -1229,19 +1275,34 @@ function renderTTDay(kidId,today,r,canEdit){
   });
   res.free.forEach(function(f){rows.push({s:f.s,h:'<div class="ttrow free"><span class="ttime">'+fromMin(f.s)+'–'+fromMin(f.e)+'</span><div class="ttitle">Free time · '+fmtMin(f.e-f.s)+'</div></div>'})});
   res.blocks.forEach(function(b){
-    rows.push({s:b.s,h:'<div class="ttrow block'+(b.clash?' clash':'')+'"><span class="ttime">'+fromMin(b.s)+'–'+fromMin(b.e)+'</span><div><div class="ttitle">'+esc(b.subject)+(b.parts>1?' (part '+b.part+' of '+b.parts+')':'')+'<span class="tag">'+(b.kind==='study'?'Study':'Homework')+'</span></div>'+
-      '<div class="sub">'+b.q+(b.q===1?' question':' questions')+' × '+(+(b.pq||0).toFixed(1))+' min = '+fmtMin(b.total||b.min)+(b.parts>1?' · this part '+fmtMin(b.min):'')+(b.manual?' · your time':'')+(b.clash?' · overlaps something else':'')+'</div>'+
+    rows.push({s:b.s,h:'<div class="ttrow block'+(b.clash?' clash':'')+'"><span class="ttime">'+fromMin(b.s)+'–'+fromMin(b.e)+'</span><div><div class="ttitle">'+esc(b.subject)+(b.parts>1?' (part '+b.part+' of '+b.parts+')':'')+'<span class="tag">'+(b.stretch?'Stretch · ':'')+(b.kind==='study'?'Study':'Homework')+'</span></div>'+
+      '<div class="sub">'+b.q+(b.q===1?' question':' questions')+' × '+(+(b.pq||0).toFixed(1))+' min = '+fmtMin(b.total||b.min)+(b.manual?' · your time':'')+(b.clash?' · overlaps something else':'')+'</div>'+
+      ((b.parts>1||b.pendAfter>0)?'<div class="sub"><b>In this slot: '+b.doQ+(b.doQ===1?' question':' questions')+' ('+fmtMin(b.min)+')</b> · '+(b.pendAfter>0?b.pendAfter+' still pending after this':'all done after this')+'</div>':'')+
       (canEdit?'<input type="time" class="tt-start" id="ts-'+esc(b.key)+'" data-key="'+esc(b.key)+'" data-date="'+date+'" data-kid="'+esc(kidId)+'" value="'+fromMin(b.s)+'" aria-label="Start time for '+esc(b.subject)+'">':'')+'</div></div>'});
   });
   rows.sort(function(a,b){return a.s-b.s});
   var up=kidItems(kidId).filter(function(a){var p=planFor(a,today);return p.unplanned&&!p.complete}),need=work.reduce(function(t,w){return t+w.min},0),edited=r.edits&&r.edits[date]&&Object.keys(r.edits[date]).length;
+  var dtm=dayTimes(r,parse(date).getDay()),decHtml='',pendHtml='';
+  Object.keys(r.caps).forEach(function(aid){
+    var n=r.caps[aid][date],a=items.get(aid);if(n===undefined||!a||a.studentId!==kidId)return;
+    decHtml+='<div class="note" style="margin:8px 16px">'+esc(a.subject)+': set to '+n+(n===1?' question':' questions')+' on this day, what fits. The rest was moved to later days.'+(canEdit?' <button class="btn small" type="button" data-act="ttundo" data-kind="cap" data-aid="'+esc(aid)+'" data-d="'+date+'">Undo</button>':'')+'</div>';
+  });
+  Object.keys(r.stretch[date]||{}).forEach(function(aid){
+    var a=items.get(aid);if(!a||a.studentId!==kidId)return;
+    decHtml+='<div class="note" style="margin:8px 16px">'+esc(a.subject)+': time added after bedtime.'+(canEdit?' <button class="btn small" type="button" data-act="ttundo" data-kind="stretch" data-aid="'+esc(aid)+'" data-d="'+date+'">Undo</button>':'')+'</div>';
+  });
+  res.pending.forEach(function(p){
+    var a=items.get(p.aid),later=a?a.dates.filter(function(d){return d>date&&a.done[d]===undefined})[0]:null,nd=later||(a?nextFree(a.dates,addDays(date,1)):addDays(date,1));
+    var end=Math.min(1439,toMin(dtm.sleep)+p.pendMin),full=toMin(dtm.sleep)+p.pendMin<=1439;
+    pendHtml+='<div class="prow"><div class="note"><b>'+esc(p.subject)+':</b> '+p.pendQ+' of '+p.q+(p.q===1?' question':' questions')+' (about '+fmtMin(p.pendMin)+') still pending after the time available today. Do you want to stretch the day or carry them forward?</div>'+
+      (canEdit?'<div class="tact"><button class="btn small" type="button" data-act="ttstretch" data-aid="'+esc(p.aid)+'" data-d="'+date+'">Stretch until '+fromMin(end)+(full?'':' (the most possible)')+'</button><button class="btn small" type="button" data-act="ttcarry" data-aid="'+esc(p.aid)+'" data-d="'+date+'">Carry forward to '+esc(fmt(nd))+'</button></div>':'')+'</div>';
+  });
   var h='<div class="upd-head"><h2>Time table</h2><p class="sub">'+esc(fmt(date,{weekday:'long',day:'numeric',month:'long'}))+'</p></div>'+
     '<div class="dates" style="padding:12px 16px">'+days.map(function(d){return '<button type="button" class="dchip sm" data-act="ttday" data-d="'+d+'" aria-pressed="'+(d===date)+'">'+esc(fmt(d,{weekday:'short',day:'numeric'}))+(d===today?' · today':'')+'</button>'}).join('')+'</div>'+
     '<div class="prow"><div>Study and homework planned: <b>'+fmtMin(need)+'</b> · free time around your day: <b>'+fmtMin(res.freeMin)+'</b></div>'+
-    (res.over.length?'<div class="note">'+fmtMin(res.over.reduce(function(t,w){return t+w.min},0))+' does not fit into the free time on this day ('+esc(res.over.map(function(w){return w.subject}).filter(function(v,i,a){return a.indexOf(v)===i}).join(', '))+'). Change the working days for those tasks, or move bedtime later under My day.</div>':'')+
     (up.length?'<div class="note">Not in the time table yet, because no working days are chosen: '+esc(up.map(function(a){return a.subject+' ('+a.total+(a.total===1?' question':' questions')+', about '+fmtMin(estMin(a,a.total))+')'}).join(', '))+'. Choose days on the task and it will appear.</div>':'')+
     (canEdit&&edited?'<div class="tact"><button class="btn small" data-act="ttreset" data-d="'+date+'">Put this day back to automatic</button></div>':'')+'</div>'+
-    (rows.length?rows.map(function(x){return x.h}).join(''):'<div class="empty">Nothing planned for this day.</div>')+
+    (rows.length?rows.map(function(x){return x.h}).join(''):'<div class="empty">Nothing planned for this day.</div>')+decHtml+pendHtml+
     (canEdit?'<div class="prow"><div class="sub">Change a start time with the box under a task. Other tasks move around it.</div></div>':'');
   $('#tt-day').innerHTML=h;
 }
@@ -1285,7 +1346,7 @@ function saveRoutine(){
   else if(d.tuition.some(function(t){return !t.days.length||toMin(t.start)===null||toMin(t.end)===null||toMin(t.end)<=toMin(t.start)}))msg='Each tuition needs at least one day, and must end after it starts.';
   else if(!(Number(d.perQ)>=1))msg='Minutes per question must be at least 1.';
   if(msg){err.textContent=msg;err.hidden=false;return}
-  var out=cleanRoutine(Object.assign({},d,{edits:cur?cur.edits:{},custom:cur?cur.custom:[]}));
+  var out=cleanRoutine(Object.assign({},d,{edits:cur?cur.edits:{},custom:cur?cur.custom:[],caps:cur?cur.caps:{},stretch:cur?cur.stretch:{}}));
   out.pid=ttKid;out.updated=Date.now();
   ttDirty=false;ttSetKey='';
   fs.doc('routines/'+ttKid).set(out).then(function(){toast('Saved.')}).catch(writeFail);
@@ -1400,6 +1461,36 @@ function renderRM(kl,c,today){
     co.remarks.map(function(x){return '<div class="prow"><div><span class="pill '+cls[x.tone]+'">'+label[x.tone]+'</span></div><div class="pname">'+esc(x.title)+'</div><div class="sub">'+esc(x.text)+'</div></div>'}).join('')+
     '<div class="prow"><div class="sub">These remarks come from fixed rules inside the app, not a live AI. To get more detailed advice from an AI chat, copy the summary below and paste it there.</div><div class="tact"><button class="btn small" type="button" data-act="rmcopy">Copy summary for an AI</button></div></div>';
 }
+function writeRoutineObj(kidId,r){
+  var today=ymd(new Date());
+  r.pid=kidId;r.updated=Date.now();
+  Object.keys(r.stretch).forEach(function(k){if(k<today)delete r.stretch[k]});
+  Object.keys(r.caps).forEach(function(a){Object.keys(r.caps[a]).forEach(function(d){if(d<today)delete r.caps[a][d]});if(!Object.keys(r.caps[a]).length)delete r.caps[a]});
+  return fs.doc('routines/'+kidId).set(r).catch(writeFail);
+}
+function stretchDay(kidId,date,aid){
+  var r=cleanRoutine(routineOf(kidId)||defRoutine());
+  (r.stretch[date]=r.stretch[date]||{})[aid]=true;
+  writeRoutineObj(kidId,r);toast('Time added after bedtime.');
+}
+// Carry forward: that day is pinned at what fits, and the rest is spread over the later days. If no later day is left, the next free day is added.
+function carryForward(kidId,date,aid){
+  var today=ymd(new Date()),a=items.get(aid);if(!a)return;
+  var dp=dayPlan(kidId,date,today),pd=dp.res.pending.filter(function(p){return p.aid===aid})[0];if(!pd)return;
+  var row=planFor(a,today).rows.filter(function(x){return x.date===date})[0],T=row&&row.target?row.target:0;
+  var r=cleanRoutine(routineOf(kidId)||defRoutine());
+  (r.caps[aid]=r.caps[aid]||{})[date]=Math.max(0,T-pd.pendQ);
+  var later=a.dates.some(function(d){return d>date&&a.done[d]===undefined}),moved='';
+  if(!later&&a.dates.length<90){moved=nextFree(a.dates,addDays(date,1));save(Object.assign({},a,{dates:a.dates.concat(moved).sort()}))}
+  writeRoutineObj(kidId,r);
+  toast('Moved '+pd.pendQ+(pd.pendQ===1?' question':' questions')+' to '+(moved?fmt(moved)+', a new working day':'the later days')+'.');
+}
+function undoDecision(kidId,kind,date,aid){
+  var r=cleanRoutine(routineOf(kidId)||defRoutine());
+  if(kind==='cap'){if(r.caps[aid])delete r.caps[aid][date]}else if(r.stretch[date])delete r.stretch[date][aid];
+  writeRoutineObj(kidId,r);
+}
+function dayPlan(kidId,date,today){var r=routineOf(kidId)||defRoutine(),work=workForDay(kidId,date,today);return{r:r,work:work,res:buildDay(r,date,work)}}
 function renderMain(today){
   var m=me(),kl=kidList(),c=curKid(),list=visibleItems(),overview=c==='all'&&kl.length>=2;
   renderKids(kl,c);
@@ -1490,6 +1581,12 @@ document.addEventListener('click',function(e){
   }
   if(act==='ttday'){ttDay=b.dataset.d;render();return}
   if(act==='cdel')return delMyTask(id);
+  if(act==='ttstretch'||act==='ttcarry'||act==='ttundo'){
+    var kk2=ttKid;if(!kk2)return;
+    if(act==='ttstretch')return stretchDay(kk2,b.dataset.d,b.dataset.aid);
+    if(act==='ttcarry')return carryForward(kk2,b.dataset.d,b.dataset.aid);
+    return undoDecision(kk2,b.dataset.kind,b.dataset.d,b.dataset.aid);
+  }
   if(act==='tsday'){tsDay=b.dataset.d;tsAddKey='';render();return}
   if(act==='tsdel'){var kk1=pickKid(kidList(),curKid());if(kk1){writeLog(kk1,tsDate(today),function(a){return a.filter(function(e){return e.id!==id})})}return}
   if(act==='rmcopy'){
